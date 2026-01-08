@@ -46,18 +46,24 @@ def create_visualization(df, question):
     """Auto-generate appropriate chart based on data"""
     if df.empty or len(df) == 0:
         return None
-
+    
     # Detect data patterns
     has_year = 'year' in df.columns
     has_name = 'name' in df.columns
     numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
-
+    
     if len(numeric_cols) == 0:
         return None
-
+    
     # Time series (line chart)
     if has_year and len(df) > 1:
-        y_col = numeric_cols[0]
+        # Smart column selection
+        if 'growth' in question.lower() or 'yoy' in question.lower():
+            growth_cols = [col for col in numeric_cols if 'growth' in col.lower() or 'percent' in col.lower()]
+            y_col = growth_cols[0] if growth_cols else numeric_cols[0]
+        else:
+            y_col = numeric_cols[0]
+        
         fig = px.line(df, x='year', y=y_col, 
                      title=f"{y_col} over time",
                      markers=True)
@@ -66,17 +72,22 @@ def create_visualization(df, question):
                          title=f"{y_col} over time by institution",
                          markers=True)
         return fig
-
+    
     # Comparison (bar chart)
     elif has_name and len(df) > 1:
-        y_col = numeric_cols[0]
+        if 'growth' in question.lower() or 'percent' in question.lower():
+            growth_cols = [col for col in numeric_cols if 'growth' in col.lower() or 'percent' in col.lower()]
+            y_col = growth_cols[0] if growth_cols else numeric_cols[0]
+        else:
+            y_col = numeric_cols[0]
+        
         fig = px.bar(df, x='name', y=y_col,
                     title=f"{y_col} by institution")
         fig.update_xaxes(tickangle=-45)
         return fig
-
-    # Single metric (metric display, no chart)
+    
     return None
+
 
 # Display conversation history
 for item in st.session_state.history:
@@ -99,7 +110,7 @@ if question:
     with st.chat_message("assistant"):
         with st.spinner("Generating SQL and fetching results..."):
             try:
-                sql, results = engine.ask(question)
+                sql, results, summary = engine.ask(question)
 
                 # Show SQL
                 with st.expander("Generated SQL"):
@@ -107,6 +118,8 @@ if question:
 
                 # Show results
                 st.dataframe(results, use_container_width=True)
+                st.success("Query executed successfully")
+                st.info(f"📊 {summary}")
 
                 # Generate visualization
                 chart = None

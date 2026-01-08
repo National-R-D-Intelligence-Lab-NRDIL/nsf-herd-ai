@@ -63,6 +63,14 @@ Columns:
 
 Convert to SQLite query: "{question}"
 
+Rules:
+- Use clear column names (avoid CAST, complex expressions in SELECT)
+- Include institution names and identifying info
+- Show raw values AND calculations (not just calculations)
+- Sort ascending by default (oldest to newest, smallest to largest)
+- Match institution names exactly as user specifies
+- "UNT Denton" should match only 'University of North Texas, Denton'
+- Don't use wildcards unless user says "all UNT campuses"
 Return ONLY the SQL query."""
 
         # Retry up to 3 times for 503 errors
@@ -75,7 +83,7 @@ Return ONLY the SQL query."""
                 return self._clean_sql(response.text)
             except Exception as e:
                 if '503' in str(e) and attempt < 2:
-                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+                    time.sleep(2 ** attempt)
                     continue
                 raise e
 
@@ -87,7 +95,39 @@ Return ONLY the SQL query."""
         return result
 
     def ask(self, question):
-        """Main interface: question -> SQL -> results"""
+        """Main interface: question -> SQL -> results -> summary"""
         sql = self.generate_sql(question)
         results = self.execute_sql(sql)
-        return sql, results
+        summary = self.summarize_results(question, results)
+        return sql, results, summary
+
+    def summarize_results(self, question, results):
+        """Generate one-line summary from results only"""
+        
+        if results.empty:
+            return "No data found."
+        
+        # Convert results to simple text
+        results_text = results.to_string(index=False, max_rows=10)
+        
+        prompt = f"""Based ONLY on this data table, write ONE sentence summarizing the key finding.
+
+Question: {question}
+
+Data:
+{results_text}
+
+Rules:
+- Use ONLY numbers from the table
+- No speculation or external knowledge
+- One sentence maximum
+- Be specific with values
+
+Summary:"""
+        
+        response = self.client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        
+        return response.text.strip()
