@@ -12,3 +12,5 @@
 
 2026-01-13 22:59:30,181 - User: kalyan | Question: What percentage of UNT's 2024 funding is federal?
 
+2026-01-13 23:08:40,447 - User: Joseph | Question: UNT YOY
+2026-01-13 23:08:40,447 - User: Joseph | Question: UNT YOY
