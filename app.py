@@ -5,6 +5,43 @@ from dotenv import load_dotenv
 import os
 import plotly.express as px
 import plotly.graph_objects as go
+import logging
+from datetime import datetime
+
+# ============================================================
+# AUTHENTICATION SYSTEM
+# ============================================================
+def check_login():
+    """Simple login system"""
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+    
+    if not st.session_state.logged_in:
+        st.title("🔐 Login Required")
+        
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        
+        if st.button("Login"):
+            # Simple password check (you can customize)
+            if username and password == "unt2024":  # Change this password
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
+        
+        st.stop()  # Stop app execution until logged in
+
+# Check login at app start
+check_login()
+
+# Setup logging for user questions only
+user_logger = logging.getLogger('user_questions')
+user_logger.setLevel(logging.INFO)
+handler = logging.FileHandler('usage_log.txt')
+handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+user_logger.addHandler(handler)
 
 # Add src to path
 sys.path.append('src')
@@ -104,6 +141,11 @@ for item in st.session_state.history:
 question = st.chat_input("Ask a question about university R&D funding...")
 
 if question:
+    # Log the question (only once)
+    if 'last_logged_question' not in st.session_state or st.session_state.last_logged_question != question:
+        user_logger.info(f"User: {st.session_state.username} | Question: {question}")
+        st.session_state.last_logged_question = question
+    
     with st.chat_message("user"):
         st.write(question)
 
