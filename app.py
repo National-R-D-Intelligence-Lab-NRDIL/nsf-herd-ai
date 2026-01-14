@@ -19,12 +19,12 @@ def check_login():
     if not st.session_state.logged_in:
         st.title("🔐 Login Required")
         
-        username = st.text_input("Username")
+        username = st.text_input("Username", placeholder="Enter your first name")
         password = st.text_input("Password", type="password")
         
         if st.button("Login"):
             # Simple password check (you can customize)
-            if username and password == "unt2024":  # Change this password
+            if username and password == "unt2026":
                 st.session_state.logged_in = True
                 st.session_state.username = username
                 st.rerun()
