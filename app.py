@@ -24,7 +24,7 @@ def check_login():
         
         if st.button("Login"):
             # Simple password check (you can customize)
-            if username and password == "unt2026":
+            if username and password == os.getenv('PASSWORD', 'unt2026'):
                 st.session_state.logged_in = True
                 st.session_state.username = username
                 st.rerun()
