@@ -46,7 +46,7 @@ streamlit run app.py
 ```
 
 ### First Login
-- Default password: `unt2024`
+- Default password: `unt2026`
 - Change in `app.py` check_login() function
 
 ## 📊 Example Questions
@@ -102,11 +102,3 @@ National Science Foundation (NSF) Higher Education Research & Development (HERD)
 Access logs stored in `usage_log.txt` (not tracked in Git)
 
 Format: `timestamp - User: username | Question: query`
-
-## 📄 License
-
-MIT License
-
-## 🤝 Contributing
-
-Contributions welcome! Please open an issue or submit a pull request.
