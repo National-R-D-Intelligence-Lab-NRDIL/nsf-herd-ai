@@ -5,8 +5,57 @@ from dotenv import load_dotenv
 import os
 import plotly.express as px
 import plotly.graph_objects as go
-import logging
 from datetime import datetime
+import json
+
+# ============================================================
+# GOOGLE SHEETS LOGGING
+# ============================================================
+def get_gsheet_client():
+    """Initialize Google Sheets client"""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        
+        # Try Streamlit secrets first, then environment variable
+        if hasattr(st, 'secrets') and 'GOOGLE_SHEETS_CREDS' in st.secrets:
+            creds_dict = json.loads(st.secrets['GOOGLE_SHEETS_CREDS'])
+        elif os.getenv('GOOGLE_SHEETS_CREDS'):
+            creds_dict = json.loads(os.getenv('GOOGLE_SHEETS_CREDS'))
+        else:
+            return None
+        
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        return client
+    except Exception as e:
+        st.warning(f"Could not connect to Google Sheets: {e}")
+        return None
+
+def log_to_sheets(username, question, sql):
+    """Log user question to Google Sheets"""
+    try:
+        client = get_gsheet_client()
+        if client is None:
+            return
+        
+        # Get sheet ID from Streamlit secrets or environment variable
+        if hasattr(st, 'secrets') and 'GOOGLE_SHEET_ID' in st.secrets:
+            sheet_id = st.secrets['GOOGLE_SHEET_ID']
+        else:
+            sheet_id = os.getenv('GOOGLE_SHEET_ID', '1QBwo8bAPBEDW9DVqtKh9VZEb8CgCLihXC8As_sO16o8')
+        
+        sheet = client.open_by_key(sheet_id).sheet1
+        
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        sheet.append_row([timestamp, username, question, sql])
+    except Exception as e:
+        # Silent fail - don't break the app if logging fails
+        pass
 
 # ============================================================
 # AUTHENTICATION SYSTEM
@@ -23,8 +72,13 @@ def check_login():
         password = st.text_input("Password", type="password")
         
         if st.button("Login"):
-            # Simple password check (you can customize)
-            if username and password == os.getenv('PASSWORD', 'unt2026'):
+            # Get password from Streamlit secrets or environment variable
+            if hasattr(st, 'secrets') and 'PASSWORD' in st.secrets:
+                correct_password = st.secrets['PASSWORD']
+            else:
+                correct_password = os.getenv('PASSWORD', 'unt2026')
+            
+            if username and password == correct_password:
                 st.session_state.logged_in = True
                 st.session_state.username = username
                 st.rerun()
@@ -36,21 +90,23 @@ def check_login():
 # Check login at app start
 check_login()
 
-# Setup logging for user questions only
-user_logger = logging.getLogger('user_questions')
-user_logger.setLevel(logging.INFO)
-handler = logging.FileHandler('usage_log.txt')
-handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-user_logger.addHandler(handler)
-
 # Add src to path
 sys.path.append('src')
 from query_engine import HERDQueryEngine
 
 # Load environment variables
 load_dotenv()
-api_key = os.getenv('GEMINI_API_KEY')
-db_path = os.getenv('DATABASE_PATH')
+
+# Get API key and database path from Streamlit secrets or environment variables
+if hasattr(st, 'secrets') and 'GEMINI_API_KEY' in st.secrets:
+    api_key = st.secrets['GEMINI_API_KEY']
+else:
+    api_key = os.getenv('GEMINI_API_KEY')
+
+if hasattr(st, 'secrets') and 'DATABASE_PATH' in st.secrets:
+    db_path = st.secrets['DATABASE_PATH']
+else:
+    db_path = os.getenv('DATABASE_PATH')
 
 # Initialize query engine
 engine = HERDQueryEngine(api_key, db_path)
@@ -77,6 +133,9 @@ with st.expander("Example Questions"):
     - Show top 5 Texas universities by R&D in 2024
     - Show UNT's R&D from 2020 to 2024
     - What percentage of UNT's 2024 funding is federal?
+    - How does UNT compare to its Texas peers in 2024?
+    - How does UNT compare to its national peers in 2024?
+    - Show Texas universities with the highest R&D growth from 2020 to 2024
     """)
 
 def create_visualization(df, question):
@@ -141,11 +200,6 @@ for item in st.session_state.history:
 question = st.chat_input("Ask a question about university R&D funding...")
 
 if question:
-    # Log the question (only once)
-    if 'last_logged_question' not in st.session_state or st.session_state.last_logged_question != question:
-        user_logger.info(f"User: {st.session_state.username} | Question: {question}")
-        st.session_state.last_logged_question = question
-    
     with st.chat_message("user"):
         st.write(question)
 
@@ -153,6 +207,11 @@ if question:
         with st.spinner("Generating SQL and fetching results..."):
             try:
                 sql, results, summary = engine.ask(question)
+
+                # Log to Google Sheets (only once per question)
+                if 'last_logged_question' not in st.session_state or st.session_state.last_logged_question != question:
+                    log_to_sheets(st.session_state.username, question, sql)
+                    st.session_state.last_logged_question = question
 
                 # Show SQL
                 with st.expander("Generated SQL"):
