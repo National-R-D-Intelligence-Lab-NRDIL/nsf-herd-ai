@@ -26,6 +26,104 @@ Columns:
 - year (INTEGER): 2010-2024
 - total_rd (INTEGER): Total R&D expenditure ($)
 - federal, state_local, business, nonprofit, institutional, other_sources (INTEGER): Funding sources ($)
+
+CRITICAL - Institution name matching rules:
+1. ALWAYS use LIKE with wildcards for flexible matching
+2. Many names end with ', The' (e.g., 'University of Texas at Austin, The')
+3. Names vary across years - same institution may have different name formats
+4. Use multiple key terms with wildcards between them
+
+Common abbreviations and their full forms:
+- 'UT' = 'University of Texas'
+- 'UNT' = 'University of North Texas'
+- 'A&M' or 'A and M' = 'A&M' (use LIKE '%A_M%' to match both)
+- 'SUNY' = 'State University of New York'
+- 'CUNY' = 'City University of New York'
+- 'Cal' or 'UC' = 'University of California'
+- 'USC' = 'University of Southern California'
+- 'MIT' = 'Massachusetts Institute of Technology'
+- 'St.' or 'Saint' = use LIKE '%St%' to match both
+
+Example name matching patterns:
+- 'UT Austin' -> WHERE name LIKE '%University of Texas%Austin%'
+- 'UT Dallas' -> WHERE name LIKE '%University of Texas%Dallas%'
+- 'Texas A&M' (main) -> WHERE name LIKE '%Texas A_M%College Station%'
+- 'Ohio State' -> WHERE name LIKE '%Ohio State%'
+- 'UNT' or 'UNT Denton' -> WHERE name LIKE '%North Texas%Denton%'
+- 'Penn State' -> WHERE name LIKE '%Pennsylvania State%'
+- 'Michigan' (main) -> WHERE name LIKE '%University of Michigan%Ann Arbor%'
+- 'SUNY Buffalo' -> WHERE name LIKE '%New York%Buffalo%'
+- 'UC Berkeley' -> WHERE name LIKE '%California%Berkeley%'
+- 'MIT' -> WHERE name LIKE '%Massachusetts Institute of Technology%'
+
+For state filtering, use the state column:
+- Texas universities: WHERE state = 'TX'
+- California universities: WHERE state = 'CA'
+
+Growth rate calculation:
+To calculate growth rate between two years:
+((end_value - start_value) / start_value) * 100 as growth_pct
+
+Example - Growth rate query pattern:
+SELECT 
+    name,
+    MAX(CASE WHEN year = 2020 THEN total_rd END) as start_value,
+    MAX(CASE WHEN year = 2024 THEN total_rd END) as end_value,
+    ROUND(((MAX(CASE WHEN year = 2024 THEN total_rd END) - MAX(CASE WHEN year = 2020 THEN total_rd END)) * 100.0 / 
+           MAX(CASE WHEN year = 2020 THEN total_rd END)), 1) as growth_pct
+FROM institutions
+WHERE year IN (2020, 2024)
+GROUP BY name
+HAVING start_value > 0 AND end_value > 0
+ORDER BY growth_pct DESC;
+UNT PEER INSTITUTIONS (for benchmarking and comparison):
+When user asks about "peers", "peer institutions", "benchmarking", or "how UNT compares":
+
+Use inst_id for exact matching (more reliable than name matching):
+
+UNT: inst_id = '003594'
+
+Texas Peers (10 inst_ids):
+'003658' -- UT Austin
+'003632' -- Texas A&M (College Station)
+'003656' -- UT Arlington
+'009741' -- UT Dallas
+'102077' -- UTRGV
+'003661' -- UTEP
+'010115' -- UTSA
+'003652' -- University of Houston
+'003644' -- Texas Tech
+'003615' -- Texas State
+
+National Peers (10 inst_ids):
+'001081' -- Arizona State
+'001574' -- Georgia State
+'003954' -- University of Central Florida
+'001825' -- Purdue
+'001316' -- UC Riverside
+'001776' -- University of Illinois Chicago
+'003675' -- University of Utah
+'330008' -- University of South Florida
+'003509' -- University of Memphis
+'002029' -- Tulane
+
+Example - UNT vs Texas peers query:
+SELECT name, total_rd
+FROM institutions
+WHERE year = 2024 AND inst_id IN ('003594', '003658', '003632', '003656', '009741', '102077', '003661', '010115', '003652', '003644', '003615')
+ORDER BY total_rd DESC;
+
+Example - UNT vs National peers query:
+SELECT name, total_rd
+FROM institutions
+WHERE year = 2024 AND inst_id IN ('003594', '001081', '001574', '003954', '001825', '001316', '001776', '003675', '330008', '003509', '002029')
+ORDER BY total_rd DESC;
+
+Example - UNT vs ALL peers query:
+SELECT name, total_rd
+FROM institutions
+WHERE year = 2024 AND inst_id IN ('003594', '003658', '003632', '003656', '009741', '102077', '003661', '010115', '003652', '003644', '003615', '001081', '001574', '003954', '001825', '001316', '001776', '003675', '330008', '003509', '002029')
+ORDER BY total_rd DESC;
 """
 
     def _clean_sql(self, text):
