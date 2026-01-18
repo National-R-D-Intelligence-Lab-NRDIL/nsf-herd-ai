@@ -76,54 +76,23 @@ GOOGLE_SHEETS_CREDS = '{"type": "service_account", ...}'
 ## Example Queries
 
 ### Growth Analysis
-- "Show UNT's R&D growth from 2020 to 2024"
-- "Which Texas universities had the highest R&D growth from 2020 to 2024?"
-- "What is UT Austin's growth rate over the last 5 years?"
+- "Show R&D growth from 2020 to 2024 for [institution]"
+- "Which universities had the highest R&D growth from 2020 to 2024?"
+- "What is the growth rate for [institution] over the last 5 years?"
 
 ### Peer Benchmarking
-- "How does UNT compare to its Texas peers in 2024?"
-- "How does UNT compare to its national peers in 2024?"
-- "Compare UNT to all its peers for 2024"
+- "How does [institution] compare to its peers in 2024?"
+- "Compare [institution] to peer institutions for 2024"
 
 ### Competitive Intelligence
-- "Compare UNT, Texas Tech, and University of Houston for 2024"
-- "Show top 10 Texas universities by R&D in 2024"
-- "What is MIT's total R&D for 2024?"
+- "Compare [institution A], [institution B], and [institution C] for 2024"
+- "Show top 10 universities by R&D in [state] for 2024"
+- "What is [institution]'s total R&D for 2024?"
 
 ### Funding Analysis
-- "What percentage of UNT's 2024 funding is federal?"
-- "Show UNT's institutional funding from 2020 to 2024"
-- "Break down UT Austin's funding sources for 2024"
-
-## Peer Institution Lists
-
-### Texas Peers (10)
-| Institution | inst_id |
-|-------------|---------|
-| UT Austin | 003658 |
-| Texas A&M (College Station) | 003632 |
-| UT Arlington | 003656 |
-| UT Dallas | 009741 |
-| UTRGV | 102077 |
-| UTEP | 003661 |
-| UTSA | 010115 |
-| University of Houston | 003652 |
-| Texas Tech | 003644 |
-| Texas State | 003615 |
-
-### National Peers (10)
-| Institution | inst_id |
-|-------------|---------|
-| Arizona State | 001081 |
-| Georgia State | 001574 |
-| University of Central Florida | 003954 |
-| Purdue | 001825 |
-| UC Riverside | 001316 |
-| University of Illinois Chicago | 001776 |
-| University of Utah | 003675 |
-| University of South Florida | 330008 |
-| University of Memphis | 003509 |
-| Tulane | 002029 |
+- "What percentage of [institution]'s 2024 funding is federal?"
+- "Show [institution]'s institutional funding from 2020 to 2024"
+- "Break down [institution]'s funding sources for 2024"
 
 ## Architecture
 
