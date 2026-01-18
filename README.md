@@ -2,103 +2,219 @@
 
 AI-powered research analytics platform for querying 15 years of university R&D funding data using natural language.
 
-## 🎯 Overview
+## Overview
 
 This tool enables university administrators to analyze NSF HERD (Higher Education Research & Development) survey data through natural language queries. Built for strategic decision-making at research institutions.
 
 **Dataset:**
-- 📊 10,084 records
-- 🏫 1,004 institutions
-- 📅 15 years (2010-2024)
-- 💰 $1+ trillion in R&D funding analyzed
+- 10,084 records covering 1,004 institutions
+- 15 years of data (2010-2024)
+- $1+ trillion in R&D funding analyzed
 
-## ✨ Features
+## Features
 
-- **Natural Language Queries** - Ask questions in plain English
-- **AI-Powered SQL Generation** - Google Gemini converts questions to SQL
-- **Auto-Generated Visualizations** - Smart charts (line/bar) based on data
-- **AI Summaries** - One-line insights with anti-hallucination guardrails
-- **Access Control** - Password-protected with usage logging
-- **Export** - Download results as CSV
+- **Natural Language Queries** — Ask questions in plain English
+- **AI-Powered SQL Generation** — Gemini converts questions to optimized SQL
+- **Growth Rate Analysis** — Calculate and compare R&D growth across institutions and time periods
+- **Peer Benchmarking** — Pre-configured peer institution lists for competitive analysis
+- **Smart Name Matching** — Handles variations like "UT Austin", "Ohio State", "MIT"
+- **Auto-Generated Visualizations** — Context-aware charts (line/bar) based on query results
+- **AI Summaries** — One-line insights with anti-hallucination guardrails
+- **Persistent Usage Logging** — Google Sheets integration for query tracking
+- **Access Control** — Password-protected with username capture
+- **Export** — Download results as CSV
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.11+
-- Gemini API key
+- Google Gemini API key
+- Google Cloud service account (for logging)
 
 ### Installation
+
 ```bash
 # Clone repository
-git clone https://github.com/Kalyan8358/nsf-herd-ai.git
+git clone https://github.com/National-R-D-Intelligence-Lab-NRDIL/nsf-herd-ai.git
 cd nsf-herd-ai
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Setup environment variables
-# Create .env file with:
-# GEMINI_API_KEY=your_key_here
-# DATABASE_PATH=data/herd.db
+# Configure environment variables (see Configuration section)
 
 # Run application
 streamlit run app.py
 ```
 
-### First Login
-- Default password: `unt2026`
-- Change in `app.py` check_login() function
+## Configuration
 
-## 📊 Example Questions
+### Environment Variables
 
-**Growth Analysis:**
+Create a `.env` file in the project root:
+
+```
+GEMINI_API_KEY=your_gemini_api_key
+DATABASE_PATH=data/herd.db
+PASSWORD=your_app_password
+GOOGLE_SHEET_ID=your_google_sheet_id
+GOOGLE_SHEETS_CREDS={"type": "service_account", ...}
+```
+
+### Streamlit Cloud Deployment
+
+Add secrets in Streamlit Cloud dashboard under Settings → Secrets:
+
+```toml
+GEMINI_API_KEY = "your_gemini_api_key"
+DATABASE_PATH = "data/herd.db"
+PASSWORD = "your_app_password"
+GOOGLE_SHEET_ID = "your_google_sheet_id"
+GOOGLE_SHEETS_CREDS = '{"type": "service_account", ...}'
+```
+
+## Example Queries
+
+### Growth Analysis
 - "Show UNT's R&D growth from 2020 to 2024"
-- "Which Texas universities had highest growth 2020-2023?"
+- "Which Texas universities had the highest R&D growth from 2020 to 2024?"
+- "What is UT Austin's growth rate over the last 5 years?"
 
-**Competitive Intelligence:**
-- "Compare UNT Denton, Texas Tech, and Houston's total R&D for 2024"
+### Peer Benchmarking
+- "How does UNT compare to its Texas peers in 2024?"
+- "How does UNT compare to its national peers in 2024?"
+- "Compare UNT to all its peers for 2024"
+
+### Competitive Intelligence
+- "Compare UNT, Texas Tech, and University of Houston for 2024"
 - "Show top 10 Texas universities by R&D in 2024"
+- "What is MIT's total R&D for 2024?"
 
-**Strategic Metrics:**
+### Funding Analysis
 - "What percentage of UNT's 2024 funding is federal?"
-- "Show UNT Denton's institutional funding from 2020 to 2024"
+- "Show UNT's institutional funding from 2020 to 2024"
+- "Break down UT Austin's funding sources for 2024"
 
-## 🏗️ Architecture
+## Peer Institution Lists
+
+### Texas Peers (10)
+| Institution | inst_id |
+|-------------|---------|
+| UT Austin | 003658 |
+| Texas A&M (College Station) | 003632 |
+| UT Arlington | 003656 |
+| UT Dallas | 009741 |
+| UTRGV | 102077 |
+| UTEP | 003661 |
+| UTSA | 010115 |
+| University of Houston | 003652 |
+| Texas Tech | 003644 |
+| Texas State | 003615 |
+
+### National Peers (10)
+| Institution | inst_id |
+|-------------|---------|
+| Arizona State | 001081 |
+| Georgia State | 001574 |
+| University of Central Florida | 003954 |
+| Purdue | 001825 |
+| UC Riverside | 001316 |
+| University of Illinois Chicago | 001776 |
+| University of Utah | 003675 |
+| University of South Florida | 330008 |
+| University of Memphis | 003509 |
+| Tulane | 002029 |
+
+## Architecture
+
 ```
 ├── app.py                    # Streamlit web interface
 ├── src/
-│   └── query_engine.py      # AI query logic (Gemini integration)
+│   └── query_engine.py       # AI query engine (SQL generation, execution, summarization)
 ├── data/
-│   └── herd.db              # SQLite database (1.47 MB)
-├── requirements.txt          # Python dependencies
-└── .env                     # Environment variables (not in repo)
+│   └── herd.db               # SQLite database
+├── requirements.txt          # Pinned dependencies
+├── .env                      # Local environment variables (not in repo)
+└── .gitignore                # Git ignore rules
 ```
 
-## 🔒 Security
+## Database Schema
 
-- ✅ API keys in environment variables
-- ✅ `.gitignore` protects secrets
-- ✅ Password-protected access
-- ✅ Usage logging with usernames
-- ✅ Pinned dependencies
+**Table: institutions**
 
-## 🛠️ Technology Stack
+| Column | Type | Description |
+|--------|------|-------------|
+| inst_id | TEXT | Institution identifier (e.g., '003594') |
+| name | TEXT | Full institution name |
+| city | TEXT | City location |
+| state | TEXT | State code (e.g., 'TX') |
+| year | INTEGER | Fiscal year (2010-2024) |
+| total_rd | INTEGER | Total R&D expenditure ($) |
+| federal | INTEGER | Federal funding ($) |
+| state_local | INTEGER | State and local funding ($) |
+| business | INTEGER | Business funding ($) |
+| nonprofit | INTEGER | Nonprofit funding ($) |
+| institutional | INTEGER | Institutional funding ($) |
+| other_sources | INTEGER | Other funding sources ($) |
 
-- **Frontend:** Streamlit
-- **AI:** Google Gemini 2.5 Flash
-- **Database:** SQLite
-- **Visualization:** Plotly
-- **Deployment:** Streamlit Cloud
+## Security
 
-## 📝 Data Source
+- API keys stored in environment variables / Streamlit secrets
+- `.gitignore` configured to exclude sensitive files
+- Password-protected application access
+- Usage logging with usernames for audit trail
+- Pinned dependencies to prevent supply chain issues
+
+## Usage Logging
+
+All queries are logged to a Google Sheet with:
+- Timestamp
+- Username
+- Question asked
+- Generated SQL
+
+Logs persist across application restarts and deployments.
+
+## Technology Stack
+
+| Component | Technology |
+|-----------|------------|
+| Frontend | Streamlit |
+| AI Model | Google Gemini 2.5 Flash |
+| Database | SQLite |
+| Visualization | Plotly |
+| Logging | Google Sheets API |
+| Deployment | Streamlit Cloud |
+
+## Data Source
 
 National Science Foundation (NSF) Higher Education Research & Development (HERD) Survey
-- Public data: https://ncses.nsf.gov/surveys/herd
+
+- Official source: https://ncses.nsf.gov/surveys/herd
 - Updated annually
-- Covers all U.S. research institutions
+- Covers all U.S. research institutions receiving federal funding
 
-## 📊 Usage Logs
+## Changelog
 
-Access logs stored in `usage_log.txt` (not tracked in Git)
+### v1.1.0 (January 2026)
+- Added growth rate calculation support
+- Added peer institution benchmarking (Texas and National peers)
+- Improved institution name matching (handles abbreviations and variations)
+- Added persistent logging via Google Sheets
+- Migrated repository to organization account
 
-Format: `timestamp - User: username | Question: query`
+### v1.0.0 (January 2026)
+- Initial release
+- Natural language to SQL conversion
+- Auto-generated visualizations
+- AI-powered summaries
+- Password authentication
+- CSV export
+
+## Contributing
+
+This project is maintained by the National R&D Intelligence Lab (NRDIL). For questions or contributions, please open an issue in the repository.
+
+## License
+
+Internal use only. Data sourced from publicly available NSF HERD survey.
