@@ -239,26 +239,35 @@ Return ONLY the SQL query."""
         return sql, results, summary
 
     def summarize_results(self, question, results):
-        """Generate one-line summary from results only"""
+        """Generate strategic summary from results"""
         
         if results.empty:
             return "No data found."
         
         # Convert results to simple text
-        results_text = results.to_string(index=False, max_rows=10)
+        results_text = results.to_string(index=False, max_rows=20)
+        row_count = len(results)
         
-        prompt = f"""Based ONLY on this data table, write ONE sentence summarizing the key finding.
+        prompt = f"""You are a strategic research analyst. Based ONLY on this data, write a 2-3 sentence insight.
 
 Question: {question}
 
-Data:
+Data ({row_count} rows):
 {results_text}
 
-Rules:
-- Use ONLY numbers from the table
-- No speculation or external knowledge
-- One sentence maximum
-- Be specific with values
+Guidelines:
+- State the KEY FINDING first (who is highest/lowest, what's the trend)
+- Provide CONTEXT (rankings, comparisons, patterns)
+- If relevant, note strategic implications (gaps, opportunities, benchmarks)
+- Use specific numbers from the table
+- Do NOT speculate beyond the data
+- Do NOT use phrases like "based on the data" or "the table shows"
+- Write in direct, executive tone
+
+Example good summaries:
+- "UNT Denton's 9.6% CAGR ranks 8th of 11 Texas peers. Texas State (20.7%) and UTSA (15.3%) demonstrate that 14%+ growth is achievable at similar institutional scale."
+- "Federal funding grew 20% annually while institutional investment grew only 4.9%. High-growth peers like Texas State show 27% institutional CAGR, suggesting this is the primary gap."
+- "UNT ranks 10th among Texas peers at $124M total R&D. The gap to 9th place (UT Arlington, $154M) is $30M."
 
 Summary:"""
         
