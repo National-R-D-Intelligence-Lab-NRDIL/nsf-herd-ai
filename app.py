@@ -139,7 +139,7 @@ with st.expander("Example Questions"):
     """)
 
 def create_visualization(df, question):
-    """Auto-generate appropriate chart based on data"""
+    """Auto-generate appropriate chart based on data and question"""
     if df.empty or len(df) == 0:
         return None
     
@@ -151,15 +151,34 @@ def create_visualization(df, question):
     if len(numeric_cols) == 0:
         return None
     
-    # Time series (line chart)
-    if has_year and len(df) > 1:
-        # Smart column selection
-        if 'growth' in question.lower() or 'yoy' in question.lower():
-            growth_cols = [col for col in numeric_cols if 'growth' in col.lower() or 'percent' in col.lower()]
-            y_col = growth_cols[0] if growth_cols else numeric_cols[0]
+    # Smart column selection based on question keywords
+    question_lower = question.lower()
+    
+    # Priority 1: Growth/CAGR questions
+    if any(word in question_lower for word in ['growth', 'cagr', 'growing', 'fastest', 'rate']):
+        cagr_cols = [col for col in numeric_cols if 'cagr' in col.lower() or 'growth' in col.lower() or 'pct' in col.lower()]
+        y_col = cagr_cols[0] if cagr_cols else numeric_cols[-1]  # CAGR usually last column
+    # Priority 2: Funding source questions
+    elif any(word in question_lower for word in ['federal', 'institutional', 'business', 'funding', 'source']):
+        funding_cols = [col for col in numeric_cols if any(f in col.lower() for f in ['federal', 'institutional', 'business', 'state', 'nonprofit'])]
+        y_col = funding_cols[0] if funding_cols else numeric_cols[0]
+    # Priority 3: Total/comparison questions
+    elif any(word in question_lower for word in ['total', 'compare', 'top', 'rank', 'peers']):
+        total_cols = [col for col in numeric_cols if 'total' in col.lower() or 'rd' in col.lower()]
+        # Prefer 2024 or latest year column
+        latest_cols = [col for col in total_cols if '2024' in col]
+        if latest_cols:
+            y_col = latest_cols[0]
+        elif total_cols:
+            y_col = total_cols[0]
         else:
             y_col = numeric_cols[0]
-        
+    # Default: use last numeric column (often the calculated result)
+    else:
+        y_col = numeric_cols[-1]
+    
+    # Time series (line chart) - when showing trends over years
+    if has_year and len(df) > 1 and df['year'].nunique() > 1:
         fig = px.line(df, x='year', y=y_col, 
                      title=f"{y_col} over time",
                      markers=True)
@@ -169,15 +188,12 @@ def create_visualization(df, question):
                          markers=True)
         return fig
     
-    # Comparison (bar chart)
+    # Bar chart - for comparisons across institutions
     elif has_name and len(df) > 1:
-        if 'growth' in question.lower() or 'percent' in question.lower():
-            growth_cols = [col for col in numeric_cols if 'growth' in col.lower() or 'percent' in col.lower()]
-            y_col = growth_cols[0] if growth_cols else numeric_cols[0]
-        else:
-            y_col = numeric_cols[0]
+        # Sort by y_col for better visualization
+        df_sorted = df.sort_values(by=y_col, ascending=False)
         
-        fig = px.bar(df, x='name', y=y_col,
+        fig = px.bar(df_sorted, x='name', y=y_col,
                     title=f"{y_col} by institution")
         fig.update_xaxes(tickangle=-45)
         return fig
