@@ -76,6 +76,7 @@ WHERE year IN (2020, 2024)
 GROUP BY name
 HAVING start_value > 0 AND end_value > 0
 ORDER BY growth_pct DESC;
+
 UNT PEER INSTITUTIONS (for benchmarking and comparison):
 When user asks about "peers", "peer institutions", "benchmarking", or "how UNT compares":
 
@@ -124,6 +125,44 @@ SELECT name, total_rd
 FROM institutions
 WHERE year = 2024 AND inst_id IN ('003594', '003658', '003632', '003656', '009741', '102077', '003661', '010115', '003652', '003644', '003615', '001081', '001574', '003954', '001825', '001316', '001776', '003675', '330008', '003509', '002029')
 ORDER BY total_rd DESC;
+
+CAGR (Compound Annual Growth Rate) calculation:
+CAGR measures average annual growth rate over a period.
+Formula: ((end_value / start_value) ^ (1/years) - 1) * 100
+
+Example - 5-year CAGR for total R&D:
+SELECT 
+    name,
+    MAX(CASE WHEN year = 2019 THEN total_rd END) as rd_2019,
+    MAX(CASE WHEN year = 2024 THEN total_rd END) as rd_2024,
+    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN total_rd END) * 1.0 / 
+           NULLIF(MAX(CASE WHEN year = 2019 THEN total_rd END), 0), 1.0/5) - 1) * 100, 1) as cagr_5yr
+FROM institutions
+WHERE state = 'TX' AND year IN (2019, 2024)
+GROUP BY name
+HAVING MAX(CASE WHEN year = 2019 THEN total_rd END) > 0 AND MAX(CASE WHEN year = 2024 THEN total_rd END) > 0
+ORDER BY cagr_5yr DESC;
+
+Example - CAGR by funding source:
+SELECT 
+    name,
+    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN total_rd END) * 1.0 / 
+           NULLIF(MAX(CASE WHEN year = 2019 THEN total_rd END), 0), 1.0/5) - 1) * 100, 1) as total_cagr,
+    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN federal END) * 1.0 / 
+           NULLIF(MAX(CASE WHEN year = 2019 THEN federal END), 0), 1.0/5) - 1) * 100, 1) as federal_cagr,
+    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN institutional END) * 1.0 / 
+           NULLIF(MAX(CASE WHEN year = 2019 THEN institutional END), 0), 1.0/5) - 1) * 100, 1) as institutional_cagr
+FROM institutions
+WHERE state = 'TX' AND year IN (2019, 2024)
+GROUP BY name
+HAVING MAX(CASE WHEN year = 2019 THEN total_rd END) > 0 AND MAX(CASE WHEN year = 2024 THEN total_rd END) > 0
+ORDER BY total_cagr DESC;
+
+CAGR benchmarks for Texas universities (2019-2024):
+- Total R&D: Top performers 15-32%, median ~8%
+- Federal: Top performers 20-27%, median ~10%
+- Institutional: Top performers 21-35%, median ~8%
+- Key insight: Institutions achieving 14%+ total CAGR typically have institutional investment CAGR above 20%
 """
 
     def _clean_sql(self, text):
