@@ -239,30 +239,29 @@ def run_strategic_queries(engine, peer_group, target_amount, target_year):
     
     # Define peer group for queries
     peer_label = "Texas peers" if peer_group == "Texas Peers" else "national peers"
-    
     queries = [
         {
             "name": "UNT Trajectory",
-            "question": "Show UNT's total R&D, federal funding, and institutional funding from 2015 to 2024"
+            "question": "Show UNT Denton's total R&D, federal, state_local, business, nonprofit, and institutional funding from 2015 to 2024"
         },
         {
             "name": "Current Position", 
-            "question": f"Compare UNT to its {peer_label} for 2024 total R&D"
+            "question": f"Compare UNT Denton to its {peer_label} for 2024 total R&D, sorted highest to lowest"
         },
         {
             "name": "Total R&D Growth",
-            "question": f"Show total R&D CAGR from 2015 to 2024 for UNT and its {peer_label}"
+            "question": f"Show total R&D CAGR from 2015 to 2024 for UNT Denton and its {peer_label}, sorted highest to lowest"
         },
         {
             "name": "Federal Funding Growth",
-            "question": f"Show federal funding CAGR from 2015 to 2024 for UNT and its {peer_label}"
+            "question": f"Show federal funding CAGR from 2015 to 2024 for UNT Denton and its {peer_label}, sorted highest to lowest"
         },
         {
             "name": "Institutional Investment Growth",
-            "question": f"Show institutional funding CAGR from 2015 to 2024 for UNT and its {peer_label}"
-        }
-    ]
-    
+            "question": f"Show institutional funding CAGR from 2015 to 2024 for UNT Denton and its {peer_label}, sorted highest to lowest"
+    }
+]
+
     results = []
     for q in queries:
         try:
@@ -313,12 +312,12 @@ Key metrics:
 - Target R&D: ${target_amount}M by {target_year}
 - Required CAGR: {required_cagr:.1f}%
 
-Write a 3-paragraph executive summary for the university cabinet that:
-1. Opens with UNT's growth achievement and competitive position
-2. Identifies the key gap (institutional investment vs peers who achieved breakthrough growth)
-3. Closes with the strategic imperative and what's at stake
+Write a 3-sentence executive summary for the university cabinet:
+1. Where we are (current position and growth)
+2. The gap (what's holding us back)
+3. The ask (what we need to do)
 
-Keep it concise, data-driven, and action-oriented. No bullet points. Write for executives."""
+No fluff. No bullet points. Direct and action-oriented."""
 
     return engine.generate_narrative(prompt)
 
