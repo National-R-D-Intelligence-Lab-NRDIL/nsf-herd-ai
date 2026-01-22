@@ -73,9 +73,12 @@ def check_login():
         
         if st.button("Login"):
             # Get password from Streamlit secrets or environment variable
-            if hasattr(st, 'secrets') and 'PASSWORD' in st.secrets:
-                correct_password = st.secrets['PASSWORD']
-            else:
+            try:
+                correct_password = st.secrets.get('PASSWORD', None)
+            except FileNotFoundError:
+                correct_password = None
+            
+            if correct_password is None:
                 correct_password = os.getenv('PASSWORD', 'unt2026')
             
             if username and password == correct_password:
@@ -98,14 +101,18 @@ from query_engine import HERDQueryEngine
 load_dotenv()
 
 # Get API key and database path from Streamlit secrets or environment variables
-if hasattr(st, 'secrets') and 'GEMINI_API_KEY' in st.secrets:
-    api_key = st.secrets['GEMINI_API_KEY']
-else:
+try:
+    api_key = st.secrets.get('GEMINI_API_KEY', None)
+except FileNotFoundError:
+    api_key = None
+if api_key is None:
     api_key = os.getenv('GEMINI_API_KEY')
 
-if hasattr(st, 'secrets') and 'DATABASE_PATH' in st.secrets:
-    db_path = st.secrets['DATABASE_PATH']
-else:
+try:
+    db_path = st.secrets.get('DATABASE_PATH', None)
+except FileNotFoundError:
+    db_path = None
+if db_path is None:
     db_path = os.getenv('DATABASE_PATH')
 
 # Initialize query engine
@@ -129,6 +136,36 @@ with st.sidebar:
     if st.button("Clear History"):
         st.session_state.history = []
         st.rerun()
+
+# ============================================================
+# STRATEGIC REPORT GENERATOR
+# ============================================================
+with st.sidebar:
+    st.divider()
+    st.header("📊 Strategic Report")
+    
+    # Customizable inputs
+    target_amount = st.number_input(
+        "Target R&D ($M)", 
+        min_value=100, 
+        max_value=500, 
+        value=250,
+        step=10
+    )
+    
+    target_year = st.selectbox(
+        "Target Year",
+        options=[2028, 2029, 2030, 2031, 2032],
+        index=2  # Default 2030
+    )
+    
+    peer_group = st.selectbox(
+        "Peer Group",
+        options=["Texas Peers", "National Peers"],
+        index=0
+    )
+    
+    generate_report = st.button("🚀 Generate Report", type="primary", use_container_width=True)
 
 # Example questions
 with st.expander("Example Questions"):
@@ -193,6 +230,337 @@ def create_visualization(df, question):
     
     return None
 
+
+# ============================================================
+# REPORT GENERATION LOGIC
+# ============================================================
+def run_strategic_queries(engine, peer_group, target_amount, target_year):
+    """Run all queries needed for strategic report"""
+    
+    # Define peer group for queries
+    peer_label = "Texas peers" if peer_group == "Texas Peers" else "national peers"
+    
+    queries = [
+        {
+            "name": "UNT Trajectory",
+            "question": "Show UNT's total R&D, federal funding, and institutional funding from 2015 to 2024"
+        },
+        {
+            "name": "Current Position", 
+            "question": f"Compare UNT to its {peer_label} for 2024 total R&D"
+        },
+        {
+            "name": "Total R&D Growth",
+            "question": f"Show total R&D CAGR from 2015 to 2024 for UNT and its {peer_label}"
+        },
+        {
+            "name": "Federal Funding Growth",
+            "question": f"Show federal funding CAGR from 2015 to 2024 for UNT and its {peer_label}"
+        },
+        {
+            "name": "Institutional Investment Growth",
+            "question": f"Show institutional funding CAGR from 2015 to 2024 for UNT and its {peer_label}"
+        }
+    ]
+    
+    results = []
+    for q in queries:
+        try:
+            sql, df, summary = engine.ask(q["question"])
+            results.append({
+                "name": q["name"],
+                "question": q["question"],
+                "sql": sql,
+                "data": df,
+                "summary": summary
+            })
+        except Exception as e:
+            results.append({
+                "name": q["name"],
+                "question": q["question"],
+                "sql": None,
+                "data": None,
+                "summary": f"Error: {str(e)}"
+            })
+    
+    return results
+
+
+def calculate_required_cagr(current_rd, target_rd, years):
+    """Calculate CAGR needed to reach target"""
+    if years <= 0 or current_rd <= 0:
+        return 0
+    return ((target_rd / current_rd) ** (1 / years) - 1) * 100
+
+
+def generate_executive_narrative(engine, report_data, target_amount, target_year, current_rd):
+    """Use Gemini to synthesize findings into executive narrative"""
+    
+    # Build context from all query summaries
+    findings = "\n".join([
+        f"- {r['name']}: {r['summary']}" 
+        for r in report_data if r['summary'] and not r['summary'].startswith('Error')
+    ])
+    
+    required_cagr = calculate_required_cagr(current_rd, target_amount, target_year - 2024)
+    
+    prompt = f"""Based on these research funding analysis findings for UNT:
+
+{findings}
+
+Key metrics:
+- Current R&D (2024): ${current_rd}M
+- Target R&D: ${target_amount}M by {target_year}
+- Required CAGR: {required_cagr:.1f}%
+
+Write a 3-paragraph executive summary for the university cabinet that:
+1. Opens with UNT's growth achievement and competitive position
+2. Identifies the key gap (institutional investment vs peers who achieved breakthrough growth)
+3. Closes with the strategic imperative and what's at stake
+
+Keep it concise, data-driven, and action-oriented. No bullet points. Write for executives."""
+
+    return engine.generate_narrative(prompt)
+
+
+# Handle report generation button click
+if generate_report:
+    st.divider()
+    st.header("📊 UNT Research: Path to $250M")
+    
+    with st.spinner("Running strategic analysis..."):
+        # Run all queries
+        report_data = run_strategic_queries(engine, peer_group, target_amount, target_year)
+    
+    # Display each section
+    for i, section in enumerate(report_data):
+        st.subheader(f"{i+1}. {section['name']}")
+        
+        if section['data'] is not None and len(section['data']) > 0:
+            # Show data table
+            st.dataframe(section['data'], use_container_width=True)
+            
+            # Show chart
+            chart = create_visualization(section['data'], section['question'])
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
+            
+            # Show summary
+            if section['summary']:
+                st.info(section['summary'])
+        else:
+            st.warning(f"Could not retrieve data: {section['summary']}")
+    
+    # Calculate required CAGR
+    st.subheader("6. Path to Target")
+    
+    # Get current R&D from first query results
+    try:
+        unt_data = report_data[0]['data']
+        current_rd = unt_data[unt_data['year'] == 2024]['total_rd'].values[0] / 1_000_000
+    except:
+        current_rd = 124.2  # Fallback
+    
+    years_to_target = target_year - 2024
+    required_cagr = calculate_required_cagr(current_rd, target_amount, years_to_target)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Current R&D (2024)", f"${current_rd:.1f}M")
+    with col2:
+        st.metric("Target", f"${target_amount}M by {target_year}")
+    with col3:
+        st.metric("Required CAGR", f"{required_cagr:.1f}%")
+    
+    # Generate executive narrative
+    st.subheader("Executive Summary")
+    with st.spinner("Generating executive narrative..."):
+        try:
+            narrative = generate_executive_narrative(
+                engine, report_data, target_amount, target_year, current_rd
+            )
+            # Clean up LaTeX-style formatting
+            narrative = narrative.replace('$', '')
+            narrative = narrative.replace('\\', '')
+            narrative = ' '.join(narrative.split())
+            st.markdown(narrative)
+        except Exception as e:
+            st.error(f"Could not generate narrative: {str(e)}")
+       
+    # Store report in session state for download
+    st.session_state.report_data = report_data
+    st.session_state.report_narrative = narrative if 'narrative' in dir() else ""
+    st.session_state.report_params = {
+        "target_amount": target_amount,
+        "target_year": target_year,
+        "current_rd": current_rd,
+        "required_cagr": required_cagr
+    }
+# ... other functions above ...
+
+def generate_executive_narrative(engine, report_data, target_amount, target_year, current_rd):
+    """Use Gemini to synthesize findings into executive narrative"""
+    # ... function body ...
+    return engine.generate_narrative(prompt)
+
+
+def generate_pdf_report(report_data, narrative, params):
+    """Generate PDF report from collected data"""
+    from fpdf import FPDF
+    from datetime import datetime
+    
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Helvetica', 'B', 10)
+            self.set_text_color(0, 133, 62)  # UNT Green
+            self.cell(0, 10, 'UNT Office of Research and Innovation', 0, 1, 'R')
+            self.ln(5)
+        
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Helvetica', 'I', 8)
+            self.set_text_color(128, 128, 128)
+            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+    
+    pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    
+    # Title
+    pdf.set_font('Helvetica', 'B', 24)
+    pdf.set_text_color(0, 133, 62)  # UNT Green
+    pdf.cell(0, 15, 'UNT Research: Path to $250M', 0, 1, 'C')
+    
+    # Subtitle
+    pdf.set_font('Helvetica', '', 12)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 10, f'Strategic Briefing | Generated {datetime.now().strftime("%B %d, %Y")}', 0, 1, 'C')
+    pdf.ln(10)
+    
+    # Key Metrics Box
+    pdf.set_fill_color(245, 247, 245)
+    pdf.set_draw_color(0, 133, 62)
+    pdf.rect(10, pdf.get_y(), 190, 25, 'DF')
+    
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_text_color(0, 0, 0)
+    y_pos = pdf.get_y() + 5
+    
+    # Three columns of metrics
+    pdf.set_xy(15, y_pos)
+    pdf.cell(60, 6, f'Current R&D (2024)', 0, 0, 'C')
+    pdf.cell(60, 6, f'Target', 0, 0, 'C')
+    pdf.cell(60, 6, f'Required CAGR', 0, 1, 'C')
+    
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.set_text_color(0, 133, 62)
+    pdf.set_x(15)
+    pdf.cell(60, 10, f'${params["current_rd"]:.1f}M', 0, 0, 'C')
+    pdf.cell(60, 10, f'${params["target_amount"]}M by {params["target_year"]}', 0, 0, 'C')
+    pdf.cell(60, 10, f'{params["required_cagr"]:.1f}%', 0, 1, 'C')
+    
+    pdf.ln(15)
+    
+    # Executive Summary
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.set_text_color(0, 133, 62)
+    pdf.cell(0, 10, 'Executive Summary', 0, 1, 'L')
+    
+    pdf.set_font('Helvetica', '', 11)
+    pdf.set_text_color(0, 0, 0)
+    pdf.multi_cell(0, 6, narrative)
+    pdf.ln(10)
+    
+    # Findings sections
+    for i, section in enumerate(report_data):
+        if section['data'] is None:
+            continue
+            
+        # Section header
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.set_text_color(0, 133, 62)
+        pdf.cell(0, 10, f'{i+1}. {section["name"]}', 0, 1, 'L')
+        
+        # Summary
+        if section.get('summary') and not section['summary'].startswith('Error'):
+            pdf.set_font('Helvetica', 'I', 10)
+            pdf.set_text_color(80, 80, 80)
+            summary_clean = section['summary'].replace('$', '').replace('\\', '')
+            pdf.multi_cell(0, 5, summary_clean)
+            pdf.ln(3)
+        
+        # Data table (simplified - top 10 rows)
+        df = section['data'].head(10)
+        if len(df) > 0:
+            pdf.set_font('Helvetica', '', 9)
+            pdf.set_text_color(0, 0, 0)
+            
+            # Calculate column widths
+            cols = df.columns.tolist()
+            col_width = 190 / len(cols)
+            
+            # Header row
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_fill_color(0, 133, 62)
+            pdf.set_text_color(255, 255, 255)
+            for col in cols:
+                col_display = str(col)[:20]  # Truncate long names
+                pdf.cell(col_width, 7, col_display, 1, 0, 'C', True)
+            pdf.ln()
+            
+            # Data rows
+            pdf.set_font('Helvetica', '', 8)
+            pdf.set_text_color(0, 0, 0)
+            for idx, row in df.iterrows():
+                for col in cols:
+                    val = row[col]
+                    if isinstance(val, float):
+                        val_str = f'{val:,.1f}'
+                    elif isinstance(val, int):
+                        val_str = f'{val:,}'
+                    else:
+                        val_str = str(val)[:25]
+                    pdf.cell(col_width, 6, val_str, 1, 0, 'C')
+                pdf.ln()
+        
+        pdf.ln(8)
+        
+        # Check if we need a new page
+        if pdf.get_y() > 250:
+            pdf.add_page()
+    
+    # Return PDF as bytes
+    return bytes(pdf.output(dest="S"))
+
+
+# Handle report generation button click
+if generate_report:
+    st.divider()
+    st.header("📊 UNT Research: Path to $250M")
+    
+    # ... rest of the if block ...
+    
+    # At the end, AFTER narrative is generated:
+    # Generate and offer PDF download
+    try:
+        pdf_bytes = generate_pdf_report(report_data, narrative, {
+            "target_amount": target_amount,
+            "target_year": target_year,
+            "current_rd": current_rd,
+            "required_cagr": required_cagr
+        })
+        
+        st.download_button(
+            label="📥 Download PDF Report",
+            data=pdf_bytes,
+            file_name=f"UNT_Path_to_{target_amount}M_{datetime.now().strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True
+        )
+        st.success("✅ Report generated!")
+    except Exception as e:
+        st.error(f"Could not generate PDF: {str(e)}")
 
 # Display conversation history
 for item in st.session_state.history:

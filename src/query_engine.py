@@ -287,3 +287,11 @@ Summary:"""
         summary = ' '.join(summary.split())
         
         return summary
+
+    def generate_narrative(self, prompt):
+        """Generate text using the model for narrative synthesis"""
+        response = self.client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text
