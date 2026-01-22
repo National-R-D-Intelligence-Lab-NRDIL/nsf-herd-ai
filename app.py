@@ -124,6 +124,11 @@ with st.sidebar:
     st.header("Visualization")
     enable_viz = st.checkbox("Auto-generate charts", value=True)
     chart_type = st.selectbox("Chart type", ["Auto", "Bar", "Line", "Scatter"])
+    
+    # Clear history button
+    if st.button("Clear History"):
+        st.session_state.history = []
+        st.rerun()
 
 # Example questions
 with st.expander("Example Questions"):
@@ -140,7 +145,7 @@ with st.expander("Example Questions"):
 
 def create_visualization(df, question):
     """Auto-generate appropriate chart based on data and question"""
-    if df.empty or len(df) == 0:
+    if df is None or df.empty or len(df) == 0:
         return None
     
     has_year = 'year' in df.columns
@@ -196,9 +201,31 @@ for item in st.session_state.history:
     with st.chat_message("assistant"):
         with st.expander("Generated SQL"):
             st.code(item['sql'], language="sql")
-        st.dataframe(item['results'], use_container_width=True)
-        if item.get('chart'):
-            st.plotly_chart(item['chart'], use_container_width=True)
+        
+        # Safely display results
+        if item.get('results') is not None and len(item['results']) > 0:
+            st.dataframe(item['results'], use_container_width=True)
+        
+        # Display summary
+        if item.get('summary'):
+            st.info(f"📊 {item['summary']}")
+        
+        # Regenerate chart from stored results instead of storing chart object
+        if enable_viz and item.get('results') is not None and len(item['results']) > 0:
+            chart = create_visualization(item['results'], item['question'])
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
+        
+        # Download button for each history item
+        if item.get('results') is not None and len(item['results']) > 0:
+            csv = item['results'].to_csv(index=False)
+            st.download_button(
+                "Download CSV",
+                csv,
+                f"results_{item['question'][:20].replace(' ', '_')}.csv",
+                "text/csv",
+                key=f"download_{hash(item['question'])}"  # Unique key for each button
+            )
 
 # Query input
 question = st.chat_input("Ask a question about university R&D funding...")
@@ -212,38 +239,49 @@ if question:
             try:
                 sql, results, summary = engine.ask(question)
 
-                # Log to Google Sheets (only once per question)
-                if 'last_logged_question' not in st.session_state or st.session_state.last_logged_question != question:
-                    log_to_sheets(st.session_state.username, question, sql)
-                    st.session_state.last_logged_question = question
+                # Log to Google Sheets
+                log_to_sheets(st.session_state.username, question, sql)
 
                 # Show SQL
                 with st.expander("Generated SQL"):
                     st.code(sql, language="sql")
 
                 # Show results
-                st.dataframe(results, use_container_width=True)
-                st.success("Query executed successfully")
-                st.info(f"📊 {summary}")
+                if results is not None and len(results) > 0:
+                    st.dataframe(results, use_container_width=True)
+                    st.success("Query executed successfully")
+                else:
+                    st.warning("Query returned no results")
+
+                # Show summary
+                if summary:
+                    st.info(f"📊 {summary}")
 
                 # Generate visualization
                 chart = None
-                if enable_viz and len(results) > 0:
+                if enable_viz and results is not None and len(results) > 0:
                     chart = create_visualization(results, question)
                     if chart:
                         st.plotly_chart(chart, use_container_width=True)
 
-                # Download button
-                csv = results.to_csv(index=False)
-                st.download_button("Download CSV", csv, "results.csv", "text/csv")
-
-                # Save to history
+                # Save to history (store summary, don't store chart object)
                 st.session_state.history.append({
                     'question': question,
                     'sql': sql,
                     'results': results,
-                    'chart': chart
+                    'summary': summary
                 })
+                
+                # Limit history to last 20 conversations to prevent memory issues
+                if len(st.session_state.history) > 20:
+                    st.session_state.history = st.session_state.history[-20:]
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
+                # Still save failed queries to history for debugging
+                st.session_state.history.append({
+                    'question': question,
+                    'sql': 'Error generating SQL',
+                    'results': None,
+                    'summary': f"Error: {str(e)}"
+                })
