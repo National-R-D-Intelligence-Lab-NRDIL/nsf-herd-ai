@@ -276,4 +276,14 @@ Summary:"""
             contents=prompt
         )
         
-        return response.text.strip()
+        # Clean up the response
+        summary = response.text.strip()
+        
+        # Remove LaTeX-style math formatting that Gemini sometimes adds
+        summary = summary.replace('$', '')
+        summary = summary.replace('\\', '')
+        
+        # Clean up any double spaces
+        summary = ' '.join(summary.split())
+        
+        return summary

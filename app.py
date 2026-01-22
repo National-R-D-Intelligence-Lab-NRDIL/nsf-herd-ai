@@ -154,25 +154,29 @@ def create_visualization(df, question):
     # Smart column selection based on question keywords
     question_lower = question.lower()
     
-    # Priority 1: Growth/CAGR questions
+    # Priority 1: Growth/CAGR questions - use CAGR or growth column
     if any(word in question_lower for word in ['growth', 'cagr', 'growing', 'fastest', 'rate']):
         cagr_cols = [col for col in numeric_cols if 'cagr' in col.lower() or 'growth' in col.lower() or 'pct' in col.lower()]
-        y_col = cagr_cols[0] if cagr_cols else numeric_cols[-1]  # CAGR usually last column
+        y_col = cagr_cols[0] if cagr_cols else numeric_cols[-1]
     # Priority 2: Funding source questions
     elif any(word in question_lower for word in ['federal', 'institutional', 'business', 'funding', 'source']):
-        funding_cols = [col for col in numeric_cols if any(f in col.lower() for f in ['federal', 'institutional', 'business', 'state', 'nonprofit'])]
-        y_col = funding_cols[0] if funding_cols else numeric_cols[0]
-    # Priority 3: Total/comparison questions
+        # For funding source CAGR, prefer the CAGR columns
+        if 'cagr' in question_lower:
+            cagr_cols = [col for col in numeric_cols if 'cagr' in col.lower()]
+            y_col = cagr_cols[0] if cagr_cols else numeric_cols[-1]
+        else:
+            funding_cols = [col for col in numeric_cols if any(f in col.lower() for f in ['federal', 'institutional', 'business', 'state', 'nonprofit'])]
+            y_col = funding_cols[0] if funding_cols else numeric_cols[0]
+    # Priority 3: Total/comparison questions - use latest year or total
     elif any(word in question_lower for word in ['total', 'compare', 'top', 'rank', 'peers']):
-        total_cols = [col for col in numeric_cols if 'total' in col.lower() or 'rd' in col.lower()]
-        # Prefer 2024 or latest year column
-        latest_cols = [col for col in total_cols if '2024' in col]
+        total_cols = [col for col in numeric_cols if 'total' in col.lower() or col == 'total_rd']
+        latest_cols = [col for col in numeric_cols if '2024' in col]
         if latest_cols:
             y_col = latest_cols[0]
         elif total_cols:
-            y_col = total_cols[0]
+            y_col = total_cols[-1]
         else:
-            y_col = numeric_cols[0]
+            y_col = numeric_cols[-1]
     # Default: use last numeric column (often the calculated result)
     else:
         y_col = numeric_cols[-1]
@@ -187,6 +191,17 @@ def create_visualization(df, question):
                          title=f"{y_col} over time by institution",
                          markers=True)
         return fig
+    
+    # Bar chart - for comparisons across institutions
+    elif has_name and len(df) > 1:
+        df_sorted = df.sort_values(by=y_col, ascending=False)
+        
+        fig = px.bar(df_sorted, x='name', y=y_col,
+                    title=f"{y_col} by institution")
+        fig.update_xaxes(tickangle=-45)
+        return fig
+    
+    return None
     
     # Bar chart - for comparisons across institutions
     elif has_name and len(df) > 1:
