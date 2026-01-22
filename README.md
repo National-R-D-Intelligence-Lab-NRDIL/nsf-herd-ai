@@ -155,6 +155,9 @@ Logs persist across application restarts and deployments.
 | Logging | Google Sheets API |
 | Deployment | Streamlit Cloud |
 
+## Monitoring
+Uptime monitoring via UptimeRobot - pings every 5 minutes to prevent Streamlit Cloud sleep.
+
 ## Data Source
 
 National Science Foundation (NSF) Higher Education Research & Development (HERD) Survey
