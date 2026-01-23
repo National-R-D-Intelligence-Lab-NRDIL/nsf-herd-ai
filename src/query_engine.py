@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import time
 
+
 class HERDQueryEngine:
     """AI-powered query engine for NSF HERD data"""
 
@@ -271,10 +272,19 @@ Example good summaries:
 
 Summary:"""
         
-        response = self.client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
+        # Retry up to 3 times for 503 errors
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt
+                )
+                break
+            except Exception as e:
+                if '503' in str(e) and attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise e
         
         # Clean up the response
         summary = response.text.strip()
@@ -290,8 +300,16 @@ Summary:"""
 
     def generate_narrative(self, prompt):
         """Generate text using the model for narrative synthesis"""
-        response = self.client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        return response.text
+        # Retry up to 3 times for 503 errors
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt
+                )
+                return response.text
+            except Exception as e:
+                if '503' in str(e) and attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise e

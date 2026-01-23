@@ -144,6 +144,27 @@ with st.sidebar:
     st.divider()
     st.header("📊 Strategic Report")
     
+    # Analysis period selector - NEW FEATURE
+    analysis_period = st.selectbox(
+        "Analysis Period",
+        options=["5-Year (2019-2024)", "10-Year (2014-2024)", "Custom"],
+        index=0
+    )
+    
+    # Custom year range if selected
+    if analysis_period == "Custom":
+        col1, col2 = st.columns(2)
+        with col1:
+            start_year = st.number_input("Start Year", min_value=2010, max_value=2023, value=2015)
+        with col2:
+            end_year = st.number_input("End Year", min_value=2011, max_value=2024, value=2024)
+    elif analysis_period == "5-Year (2019-2024)":
+        start_year = 2019
+        end_year = 2024
+    else:  # 10-Year
+        start_year = 2014
+        end_year = 2024
+    
     # Customizable inputs
     target_amount = st.number_input(
         "Target R&D ($M)", 
@@ -234,34 +255,38 @@ def create_visualization(df, question):
 # ============================================================
 # REPORT GENERATION LOGIC
 # ============================================================
-def run_strategic_queries(engine, peer_group, target_amount, target_year):
+def run_strategic_queries(engine, peer_group, start_year, end_year):
     """Run all queries needed for strategic report"""
     
     # Define peer group for queries
     peer_label = "Texas peers" if peer_group == "Texas Peers" else "national peers"
+    
+    # Calculate number of years for display
+    num_years = end_year - start_year
+    
     queries = [
         {
             "name": "UNT Trajectory",
-            "question": "Show UNT Denton's total R&D, federal, state_local, business, nonprofit, and institutional funding from 2015 to 2024"
+            "question": f"Show UNT Denton's total R&D, federal, state_local, business, nonprofit, and institutional funding from {start_year} to {end_year}"
         },
         {
             "name": "Current Position", 
-            "question": f"Compare UNT Denton to its {peer_label} for 2024 total R&D, sorted highest to lowest"
+            "question": f"Compare UNT Denton to its {peer_label} for {end_year} total R&D, sorted highest to lowest"
         },
         {
-            "name": "Total R&D Growth",
-            "question": f"Show total R&D CAGR from 2015 to 2024 for UNT Denton and its {peer_label}, sorted highest to lowest"
+            "name": f"Total R&D Growth ({num_years}-Year)",
+            "question": f"Show total R&D CAGR from {start_year} to {end_year} for UNT Denton and its {peer_label}, sorted highest to lowest"
         },
         {
-            "name": "Federal Funding Growth",
-            "question": f"Show federal funding CAGR from 2015 to 2024 for UNT Denton and its {peer_label}, sorted highest to lowest"
+            "name": f"Federal Funding Growth ({num_years}-Year)",
+            "question": f"Show federal funding CAGR from {start_year} to {end_year} for UNT Denton and its {peer_label}, sorted highest to lowest"
         },
         {
-            "name": "Institutional Investment Growth",
-            "question": f"Show institutional funding CAGR from 2015 to 2024 for UNT Denton and its {peer_label}, sorted highest to lowest"
-    }
-]
-
+            "name": f"Institutional Investment Growth ({num_years}-Year)",
+            "question": f"Show institutional funding CAGR from {start_year} to {end_year} for UNT Denton and its {peer_label}, sorted highest to lowest"
+        }
+    ]
+    
     results = []
     for q in queries:
         try:
@@ -292,7 +317,7 @@ def calculate_required_cagr(current_rd, target_rd, years):
     return ((target_rd / current_rd) ** (1 / years) - 1) * 100
 
 
-def generate_executive_narrative(engine, report_data, target_amount, target_year, current_rd):
+def generate_executive_narrative(engine, report_data, target_amount, target_year, current_rd, start_year, end_year):
     """Use Gemini to synthesize findings into executive narrative"""
     
     # Build context from all query summaries
@@ -301,14 +326,15 @@ def generate_executive_narrative(engine, report_data, target_amount, target_year
         for r in report_data if r['summary'] and not r['summary'].startswith('Error')
     ])
     
-    required_cagr = calculate_required_cagr(current_rd, target_amount, target_year - 2024)
+    required_cagr = calculate_required_cagr(current_rd, target_amount, target_year - end_year)
+    num_years = end_year - start_year
     
-    prompt = f"""Based on these research funding analysis findings for UNT:
+    prompt = f"""Based on these research funding analysis findings for UNT ({num_years}-year analysis from {start_year} to {end_year}):
 
 {findings}
 
 Key metrics:
-- Current R&D (2024): ${current_rd}M
+- Current R&D ({end_year}): ${current_rd}M
 - Target R&D: ${target_amount}M by {target_year}
 - Required CAGR: {required_cagr:.1f}%
 
@@ -322,97 +348,15 @@ No fluff. No bullet points. Direct and action-oriented."""
     return engine.generate_narrative(prompt)
 
 
-# Handle report generation button click
-if generate_report:
-    st.divider()
-    st.header("📊 UNT Research: Path to $250M")
-    
-    with st.spinner("Running strategic analysis..."):
-        # Run all queries
-        report_data = run_strategic_queries(engine, peer_group, target_amount, target_year)
-    
-    # Display each section
-    for i, section in enumerate(report_data):
-        st.subheader(f"{i+1}. {section['name']}")
-        
-        if section['data'] is not None and len(section['data']) > 0:
-            # Show data table
-            st.dataframe(section['data'], use_container_width=True)
-            
-            # Show chart
-            chart = create_visualization(section['data'], section['question'])
-            if chart:
-                st.plotly_chart(chart, use_container_width=True)
-            
-            # Show summary
-            if section['summary']:
-                st.info(section['summary'])
-        else:
-            st.warning(f"Could not retrieve data: {section['summary']}")
-    
-    # Calculate required CAGR
-    st.subheader("6. Path to Target")
-    
-    # Get current R&D from first query results
-    try:
-        unt_data = report_data[0]['data']
-        current_rd = unt_data[unt_data['year'] == 2024]['total_rd'].values[0] / 1_000_000
-    except:
-        current_rd = 124.2  # Fallback
-    
-    years_to_target = target_year - 2024
-    required_cagr = calculate_required_cagr(current_rd, target_amount, years_to_target)
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Current R&D (2024)", f"${current_rd:.1f}M")
-    with col2:
-        st.metric("Target", f"${target_amount}M by {target_year}")
-    with col3:
-        st.metric("Required CAGR", f"{required_cagr:.1f}%")
-    
-    # Generate executive narrative
-    st.subheader("Executive Summary")
-    with st.spinner("Generating executive narrative..."):
-        try:
-            narrative = generate_executive_narrative(
-                engine, report_data, target_amount, target_year, current_rd
-            )
-            # Clean up LaTeX-style formatting
-            narrative = narrative.replace('$', '')
-            narrative = narrative.replace('\\', '')
-            narrative = ' '.join(narrative.split())
-            st.markdown(narrative)
-        except Exception as e:
-            st.error(f"Could not generate narrative: {str(e)}")
-       
-    # Store report in session state for download
-    st.session_state.report_data = report_data
-    st.session_state.report_narrative = narrative if 'narrative' in dir() else ""
-    st.session_state.report_params = {
-        "target_amount": target_amount,
-        "target_year": target_year,
-        "current_rd": current_rd,
-        "required_cagr": required_cagr
-    }
-# ... other functions above ...
-
-def generate_executive_narrative(engine, report_data, target_amount, target_year, current_rd):
-    """Use Gemini to synthesize findings into executive narrative"""
-    # ... function body ...
-    return engine.generate_narrative(prompt)
-
-
 def generate_pdf_report(report_data, narrative, params):
     """Generate PDF report from collected data"""
     from fpdf import FPDF
-    from datetime import datetime
     
     class PDF(FPDF):
         def header(self):
             self.set_font('Helvetica', 'B', 10)
             self.set_text_color(0, 133, 62)  # UNT Green
-            self.cell(0, 10, 'UNT Office of Research and Innovation', 0, 1, 'R')
+            self.cell(0, 10, 'UNT Division of Research and Innovation', 0, 1, 'R')
             self.ln(5)
         
         def footer(self):
@@ -425,15 +369,16 @@ def generate_pdf_report(report_data, narrative, params):
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # Title
+    # Title - dynamic based on target
     pdf.set_font('Helvetica', 'B', 24)
     pdf.set_text_color(0, 133, 62)  # UNT Green
-    pdf.cell(0, 15, 'UNT Research: Path to $250M', 0, 1, 'C')
+    pdf.cell(0, 15, f'UNT Research: Path to ${params["target_amount"]}M', 0, 1, 'C')
     
-    # Subtitle
+    # Subtitle with analysis period
     pdf.set_font('Helvetica', '', 12)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 10, f'Strategic Briefing | Generated {datetime.now().strftime("%B %d, %Y")}', 0, 1, 'C')
+    analysis_label = f'{params["start_year"]}-{params["end_year"]} Analysis'
+    pdf.cell(0, 10, f'Strategic Briefing | {analysis_label} | Generated {datetime.now().strftime("%B %d, %Y")}', 0, 1, 'C')
     pdf.ln(10)
     
     # Key Metrics Box
@@ -447,7 +392,7 @@ def generate_pdf_report(report_data, narrative, params):
     
     # Three columns of metrics
     pdf.set_xy(15, y_pos)
-    pdf.cell(60, 6, f'Current R&D (2024)', 0, 0, 'C')
+    pdf.cell(60, 6, f'Current R&D ({params["end_year"]})', 0, 0, 'C')
     pdf.cell(60, 6, f'Target', 0, 0, 'C')
     pdf.cell(60, 6, f'Required CAGR', 0, 1, 'C')
     
@@ -529,30 +474,92 @@ def generate_pdf_report(report_data, narrative, params):
             pdf.add_page()
     
     # Return PDF as bytes
-    return bytes(pdf.output(dest="S"))
+    return bytes(pdf.output())
 
 
 # Handle report generation button click
 if generate_report:
     st.divider()
-    st.header("📊 UNT Research: Path to $250M")
     
-    # ... rest of the if block ...
+    # Dynamic header based on analysis period
+    num_years = end_year - start_year
+    st.header(f"📊 UNT Research: Path to ${target_amount}M ({num_years}-Year Analysis)")
     
-    # At the end, AFTER narrative is generated:
+    with st.spinner("Running strategic analysis..."):
+        # Run all queries with selected year range
+        report_data = run_strategic_queries(engine, peer_group, start_year, end_year)
+    
+    # Display each section
+    for i, section in enumerate(report_data):
+        st.subheader(f"{i+1}. {section['name']}")
+        
+        if section['data'] is not None and len(section['data']) > 0:
+            # Show data table
+            st.dataframe(section['data'], use_container_width=True)
+            
+            # Show chart
+            chart = create_visualization(section['data'], section['question'])
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
+            
+            # Show summary
+            if section['summary']:
+                st.info(section['summary'])
+        else:
+            st.warning(f"Could not retrieve data: {section['summary']}")
+    
+    # Calculate required CAGR
+    st.subheader("6. Path to Target")
+    
+    # Get current R&D from first query results
+    try:
+        unt_data = report_data[0]['data']
+        current_rd = unt_data[unt_data['year'] == end_year]['total_rd'].values[0] / 1_000_000
+    except:
+        current_rd = 124.2  # Fallback
+    
+    years_to_target = target_year - end_year
+    required_cagr = calculate_required_cagr(current_rd, target_amount, years_to_target)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(f"Current R&D ({end_year})", f"${current_rd:.1f}M")
+    with col2:
+        st.metric("Target", f"${target_amount}M by {target_year}")
+    with col3:
+        st.metric("Required CAGR", f"{required_cagr:.1f}%")
+    
+    # Generate executive narrative
+    st.subheader("Executive Summary")
+    with st.spinner("Generating executive narrative..."):
+        try:
+            narrative = generate_executive_narrative(
+                engine, report_data, target_amount, target_year, current_rd, start_year, end_year
+            )
+            # Clean up LaTeX-style formatting
+            narrative = narrative.replace('$', '')
+            narrative = narrative.replace('\\', '')
+            narrative = ' '.join(narrative.split())
+            st.markdown(narrative)
+        except Exception as e:
+            st.error(f"Could not generate narrative: {str(e)}")
+            narrative = "Executive summary could not be generated."
+    
     # Generate and offer PDF download
     try:
         pdf_bytes = generate_pdf_report(report_data, narrative, {
             "target_amount": target_amount,
             "target_year": target_year,
             "current_rd": current_rd,
-            "required_cagr": required_cagr
+            "required_cagr": required_cagr,
+            "start_year": start_year,
+            "end_year": end_year
         })
         
         st.download_button(
             label="📥 Download PDF Report",
             data=pdf_bytes,
-            file_name=f"UNT_Path_to_{target_amount}M_{datetime.now().strftime('%Y%m%d')}.pdf",
+            file_name=f"UNT_Path_to_{target_amount}M_{num_years}yr_{datetime.now().strftime('%Y%m%d')}.pdf",
             mime="application/pdf",
             type="primary",
             use_container_width=True
@@ -560,6 +567,7 @@ if generate_report:
         st.success("✅ Report generated!")
     except Exception as e:
         st.error(f"Could not generate PDF: {str(e)}")
+
 
 # Display conversation history
 for item in st.session_state.history:
