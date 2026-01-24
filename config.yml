@@ -1,0 +1,57 @@
+# ============================================================
+# NSF HERD AI Framework - Institution Configuration
+# ============================================================
+# This file contains all institution-specific settings.
+# To deploy for another university, copy this file and update values.
+
+institution:
+  inst_id: "003594"
+  name: "University of North Texas"
+  short_name: "UNT"
+  city: "Denton"
+  state: "TX"
+
+branding:
+  primary_color: "#00853E"      # UNT Green
+  secondary_color: "#FFFFFF"
+  header_text: "UNT Office of Research and Innovation"
+
+peers:
+  texas:
+    - {id: "003658", name: "UT Austin"}
+    - {id: "003632", name: "Texas A&M"}
+    - {id: "003656", name: "UT Arlington"}
+    - {id: "009741", name: "UT Dallas"}
+    - {id: "102077", name: "UTRGV"}
+    - {id: "003661", name: "UTEP"}
+    - {id: "010115", name: "UTSA"}
+    - {id: "003652", name: "University of Houston"}
+    - {id: "003644", name: "Texas Tech"}
+    - {id: "003615", name: "Texas State"}
+  national:
+    - {id: "001081", name: "Arizona State"}
+    - {id: "001574", name: "Georgia State"}
+    - {id: "003954", name: "University of Central Florida"}
+    - {id: "001825", name: "Purdue"}
+    - {id: "001316", name: "UC Riverside"}
+    - {id: "001776", name: "University of Illinois Chicago"}
+    - {id: "003675", name: "University of Utah"}
+    - {id: "330008", name: "University of South Florida"}
+    - {id: "003509", name: "University of Memphis"}
+    - {id: "002029", name: "Tulane"}
+
+targets:
+  default_amount_millions: 250
+  default_target_year: 2030
+
+analysis:
+  data_start_year: 2010
+  data_end_year: 2024
+  default_period: "5-year"  # Options: "5-year", "10-year", "custom"
+
+report:
+  title_template: "{short_name} Research: Path to ${target}M"
+  subtitle_template: "Strategic Briefing | {period} Analysis"
+
+auth:
+  default_password: "unt2026"  # Override in secrets for production

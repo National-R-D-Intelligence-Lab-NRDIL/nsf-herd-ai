@@ -7,6 +7,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import json
+import yaml
+
+# Load config
+with open('config.yml', 'r') as f:
+    config = yaml.safe_load(f)
 
 # ============================================================
 # GOOGLE SHEETS LOGGING
@@ -17,7 +22,6 @@ def get_gsheet_client():
         import gspread
         from google.oauth2.service_account import Credentials
         
-        # Try Streamlit secrets first, then environment variable
         if hasattr(st, 'secrets') and 'GOOGLE_SHEETS_CREDS' in st.secrets:
             creds_dict = json.loads(st.secrets['GOOGLE_SHEETS_CREDS'])
         elif os.getenv('GOOGLE_SHEETS_CREDS'):
@@ -43,18 +47,15 @@ def log_to_sheets(username, question, sql):
         if client is None:
             return
         
-        # Get sheet ID from Streamlit secrets or environment variable
         if hasattr(st, 'secrets') and 'GOOGLE_SHEET_ID' in st.secrets:
             sheet_id = st.secrets['GOOGLE_SHEET_ID']
         else:
             sheet_id = os.getenv('GOOGLE_SHEET_ID', '1QBwo8bAPBEDW9DVqtKh9VZEb8CgCLihXC8As_sO16o8')
         
         sheet = client.open_by_key(sheet_id).sheet1
-        
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         sheet.append_row([timestamp, username, question, sql])
     except Exception as e:
-        # Silent fail - don't break the app if logging fails
         pass
 
 # ============================================================
@@ -72,14 +73,13 @@ def check_login():
         password = st.text_input("Password", type="password")
         
         if st.button("Login"):
-            # Get password from Streamlit secrets or environment variable
             try:
                 correct_password = st.secrets.get('PASSWORD', None)
             except FileNotFoundError:
                 correct_password = None
             
             if correct_password is None:
-                correct_password = os.getenv('PASSWORD', 'unt2026')
+                correct_password = os.getenv('PASSWORD', config['auth']['default_password'])
             
             if username and password == correct_password:
                 st.session_state.logged_in = True
@@ -88,9 +88,8 @@ def check_login():
             else:
                 st.error("Invalid credentials")
         
-        st.stop()  # Stop app execution until logged in
+        st.stop()
 
-# Check login at app start
 check_login()
 
 # Add src to path
@@ -100,7 +99,6 @@ from query_engine import HERDQueryEngine
 # Load environment variables
 load_dotenv()
 
-# Get API key and database path from Streamlit secrets or environment variables
 try:
     api_key = st.secrets.get('GEMINI_API_KEY', None)
 except FileNotFoundError:
@@ -122,9 +120,17 @@ engine = HERDQueryEngine(api_key, db_path)
 if 'history' not in st.session_state:
     st.session_state.history = []
 
+# Get config values
+short_name = config['institution']['short_name']
+inst_name = config['institution']['name']
+primary_color = config['branding']['primary_color']
+header_text = config['branding']['header_text']
+default_target = config['targets']['default_amount_millions']
+default_year = config['targets']['default_target_year']
+
 # Streamlit UI
-st.title("NSF HERD AI Assistant")
-st.markdown("Ask questions about university R&D funding (2010-2024)")
+st.title(f"NSF HERD AI Assistant - {short_name}")
+st.markdown(f"Ask questions about university R&D funding ({config['analysis']['data_start_year']}-{config['analysis']['data_end_year']})")
 
 # Sidebar for visualization options
 with st.sidebar:
@@ -132,7 +138,6 @@ with st.sidebar:
     enable_viz = st.checkbox("Auto-generate charts", value=True)
     chart_type = st.selectbox("Chart type", ["Auto", "Bar", "Line", "Scatter"])
     
-    # Clear history button
     if st.button("Clear History"):
         st.session_state.history = []
         st.rerun()
@@ -144,14 +149,12 @@ with st.sidebar:
     st.divider()
     st.header("📊 Strategic Report")
     
-    # Analysis period selector - NEW FEATURE
     analysis_period = st.selectbox(
         "Analysis Period",
         options=["5-Year (2019-2024)", "10-Year (2014-2024)", "Custom"],
         index=0
     )
     
-    # Custom year range if selected
     if analysis_period == "Custom":
         col1, col2 = st.columns(2)
         with col1:
@@ -161,23 +164,22 @@ with st.sidebar:
     elif analysis_period == "5-Year (2019-2024)":
         start_year = 2019
         end_year = 2024
-    else:  # 10-Year
+    else:
         start_year = 2014
         end_year = 2024
     
-    # Customizable inputs
     target_amount = st.number_input(
         "Target R&D ($M)", 
         min_value=100, 
         max_value=500, 
-        value=250,
+        value=default_target,
         step=10
     )
     
     target_year = st.selectbox(
         "Target Year",
         options=[2028, 2029, 2030, 2031, 2032],
-        index=2  # Default 2030
+        index=[2028, 2029, 2030, 2031, 2032].index(default_year)
     )
     
     peer_group = st.selectbox(
@@ -190,15 +192,14 @@ with st.sidebar:
 
 # Example questions
 with st.expander("Example Questions"):
-    st.markdown("""
-    - What is UNT's total R&D for 2024?
-    - Compare UNT and Texas Tech for 2024
+    st.markdown(f"""
+    - What is {short_name}'s total R&D for 2024?
+    - Compare {short_name} and Texas Tech for 2024
     - Show top 5 Texas universities by R&D in 2024
-    - Show UNT's R&D from 2020 to 2024
-    - What percentage of UNT's 2024 funding is federal?
-    - How does UNT compare to its Texas peers in 2024?
-    - How does UNT compare to its national peers in 2024?
-    - Show Texas universities with the highest R&D growth from 2020 to 2024
+    - Show {short_name}'s R&D from 2020 to 2024
+    - What percentage of {short_name}'s 2024 funding is federal?
+    - How does {short_name} compare to its Texas peers in 2024?
+    - How does {short_name} compare to its national peers in 2024?
     """)
 
 def create_visualization(df, question):
@@ -258,32 +259,30 @@ def create_visualization(df, question):
 def run_strategic_queries(engine, peer_group, start_year, end_year):
     """Run all queries needed for strategic report"""
     
-    # Define peer group for queries
     peer_label = "Texas peers" if peer_group == "Texas Peers" else "national peers"
-    
-    # Calculate number of years for display
     num_years = end_year - start_year
+    inst = config['institution']['short_name']
     
     queries = [
         {
-            "name": "UNT Trajectory",
-            "question": f"Show UNT Denton's total R&D, federal, state_local, business, nonprofit, and institutional funding from {start_year} to {end_year}"
+            "name": f"{inst} Trajectory",
+            "question": f"Show {inst} Denton's total R&D, federal, state_local, business, nonprofit, and institutional funding from {start_year} to {end_year}"
         },
         {
             "name": "Current Position", 
-            "question": f"Compare UNT Denton to its {peer_label} for {end_year} total R&D, sorted highest to lowest"
+            "question": f"Compare {inst} Denton to its {peer_label} for {end_year} total R&D, sorted highest to lowest"
         },
         {
             "name": f"Total R&D Growth ({num_years}-Year)",
-            "question": f"Show total R&D CAGR from {start_year} to {end_year} for UNT Denton and its {peer_label}, sorted highest to lowest"
+            "question": f"Show total R&D CAGR from {start_year} to {end_year} for {inst} Denton and its {peer_label}, sorted highest to lowest"
         },
         {
             "name": f"Federal Funding Growth ({num_years}-Year)",
-            "question": f"Show federal funding CAGR from {start_year} to {end_year} for UNT Denton and its {peer_label}, sorted highest to lowest"
+            "question": f"Show federal funding CAGR from {start_year} to {end_year} for {inst} Denton and its {peer_label}, sorted highest to lowest"
         },
         {
             "name": f"Institutional Investment Growth ({num_years}-Year)",
-            "question": f"Show institutional funding CAGR from {start_year} to {end_year} for UNT Denton and its {peer_label}, sorted highest to lowest"
+            "question": f"Show institutional funding CAGR from {start_year} to {end_year} for {inst} Denton and its {peer_label}, sorted highest to lowest"
         }
     ]
     
@@ -320,7 +319,6 @@ def calculate_required_cagr(current_rd, target_rd, years):
 def generate_executive_narrative(engine, report_data, target_amount, target_year, current_rd, start_year, end_year):
     """Use Gemini to synthesize findings into executive narrative"""
     
-    # Build context from all query summaries
     findings = "\n".join([
         f"- {r['name']}: {r['summary']}" 
         for r in report_data if r['summary'] and not r['summary'].startswith('Error')
@@ -328,8 +326,9 @@ def generate_executive_narrative(engine, report_data, target_amount, target_year
     
     required_cagr = calculate_required_cagr(current_rd, target_amount, target_year - end_year)
     num_years = end_year - start_year
+    inst = config['institution']['short_name']
     
-    prompt = f"""Based on these research funding analysis findings for UNT ({num_years}-year analysis from {start_year} to {end_year}):
+    prompt = f"""Based on these research funding analysis findings for {inst} ({num_years}-year analysis from {start_year} to {end_year}):
 
 {findings}
 
@@ -352,11 +351,15 @@ def generate_pdf_report(report_data, narrative, params):
     """Generate PDF report from collected data"""
     from fpdf import FPDF
     
+    # Parse primary color from hex
+    pc = config['branding']['primary_color'].lstrip('#')
+    pr, pg, pb = int(pc[0:2], 16), int(pc[2:4], 16), int(pc[4:6], 16)
+    
     class PDF(FPDF):
         def header(self):
             self.set_font('Helvetica', 'B', 10)
-            self.set_text_color(0, 133, 62)  # UNT Green
-            self.cell(0, 10, 'UNT Division of Research and Innovation', 0, 1, 'R')
+            self.set_text_color(pr, pg, pb)
+            self.cell(0, 10, config['branding']['header_text'], 0, 1, 'R')
             self.ln(5)
         
         def footer(self):
@@ -369,12 +372,12 @@ def generate_pdf_report(report_data, narrative, params):
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # Title - dynamic based on target
+    # Title
     pdf.set_font('Helvetica', 'B', 24)
-    pdf.set_text_color(0, 133, 62)  # UNT Green
-    pdf.cell(0, 15, f'UNT Research: Path to ${params["target_amount"]}M', 0, 1, 'C')
+    pdf.set_text_color(pr, pg, pb)
+    pdf.cell(0, 15, f'{short_name} Research: Path to ${params["target_amount"]}M', 0, 1, 'C')
     
-    # Subtitle with analysis period
+    # Subtitle
     pdf.set_font('Helvetica', '', 12)
     pdf.set_text_color(100, 100, 100)
     analysis_label = f'{params["start_year"]}-{params["end_year"]} Analysis'
@@ -383,21 +386,20 @@ def generate_pdf_report(report_data, narrative, params):
     
     # Key Metrics Box
     pdf.set_fill_color(245, 247, 245)
-    pdf.set_draw_color(0, 133, 62)
+    pdf.set_draw_color(pr, pg, pb)
     pdf.rect(10, pdf.get_y(), 190, 25, 'DF')
     
     pdf.set_font('Helvetica', 'B', 11)
     pdf.set_text_color(0, 0, 0)
     y_pos = pdf.get_y() + 5
     
-    # Three columns of metrics
     pdf.set_xy(15, y_pos)
     pdf.cell(60, 6, f'Current R&D ({params["end_year"]})', 0, 0, 'C')
     pdf.cell(60, 6, f'Target', 0, 0, 'C')
     pdf.cell(60, 6, f'Required CAGR', 0, 1, 'C')
     
     pdf.set_font('Helvetica', 'B', 14)
-    pdf.set_text_color(0, 133, 62)
+    pdf.set_text_color(pr, pg, pb)
     pdf.set_x(15)
     pdf.cell(60, 10, f'${params["current_rd"]:.1f}M', 0, 0, 'C')
     pdf.cell(60, 10, f'${params["target_amount"]}M by {params["target_year"]}', 0, 0, 'C')
@@ -407,7 +409,7 @@ def generate_pdf_report(report_data, narrative, params):
     
     # Executive Summary
     pdf.set_font('Helvetica', 'B', 14)
-    pdf.set_text_color(0, 133, 62)
+    pdf.set_text_color(pr, pg, pb)
     pdf.cell(0, 10, 'Executive Summary', 0, 1, 'L')
     
     pdf.set_font('Helvetica', '', 11)
@@ -420,12 +422,10 @@ def generate_pdf_report(report_data, narrative, params):
         if section['data'] is None:
             continue
             
-        # Section header
         pdf.set_font('Helvetica', 'B', 12)
-        pdf.set_text_color(0, 133, 62)
+        pdf.set_text_color(pr, pg, pb)
         pdf.cell(0, 10, f'{i+1}. {section["name"]}', 0, 1, 'L')
         
-        # Summary
         if section.get('summary') and not section['summary'].startswith('Error'):
             pdf.set_font('Helvetica', 'I', 10)
             pdf.set_text_color(80, 80, 80)
@@ -433,26 +433,22 @@ def generate_pdf_report(report_data, narrative, params):
             pdf.multi_cell(0, 5, summary_clean)
             pdf.ln(3)
         
-        # Data table (simplified - top 10 rows)
         df = section['data'].head(10)
         if len(df) > 0:
             pdf.set_font('Helvetica', '', 9)
             pdf.set_text_color(0, 0, 0)
             
-            # Calculate column widths
             cols = df.columns.tolist()
             col_width = 190 / len(cols)
             
-            # Header row
             pdf.set_font('Helvetica', 'B', 9)
-            pdf.set_fill_color(0, 133, 62)
+            pdf.set_fill_color(pr, pg, pb)
             pdf.set_text_color(255, 255, 255)
             for col in cols:
-                col_display = str(col)[:20]  # Truncate long names
+                col_display = str(col)[:20]
                 pdf.cell(col_width, 7, col_display, 1, 0, 'C', True)
             pdf.ln()
             
-            # Data rows
             pdf.set_font('Helvetica', '', 8)
             pdf.set_text_color(0, 0, 0)
             for idx, row in df.iterrows():
@@ -469,54 +465,44 @@ def generate_pdf_report(report_data, narrative, params):
         
         pdf.ln(8)
         
-        # Check if we need a new page
         if pdf.get_y() > 250:
             pdf.add_page()
     
-    # Return PDF as bytes
     return bytes(pdf.output())
 
 
-# Handle report generation button click
+# Handle report generation
 if generate_report:
     st.divider()
     
-    # Dynamic header based on analysis period
     num_years = end_year - start_year
-    st.header(f"📊 UNT Research: Path to ${target_amount}M ({num_years}-Year Analysis)")
+    st.header(f"📊 {short_name} Research: Path to ${target_amount}M ({num_years}-Year Analysis)")
     
     with st.spinner("Running strategic analysis..."):
-        # Run all queries with selected year range
         report_data = run_strategic_queries(engine, peer_group, start_year, end_year)
     
-    # Display each section
     for i, section in enumerate(report_data):
         st.subheader(f"{i+1}. {section['name']}")
         
         if section['data'] is not None and len(section['data']) > 0:
-            # Show data table
             st.dataframe(section['data'], use_container_width=True)
             
-            # Show chart
             chart = create_visualization(section['data'], section['question'])
             if chart:
                 st.plotly_chart(chart, use_container_width=True)
             
-            # Show summary
             if section['summary']:
                 st.info(section['summary'])
         else:
             st.warning(f"Could not retrieve data: {section['summary']}")
     
-    # Calculate required CAGR
     st.subheader("6. Path to Target")
     
-    # Get current R&D from first query results
     try:
         unt_data = report_data[0]['data']
         current_rd = unt_data[unt_data['year'] == end_year]['total_rd'].values[0] / 1_000_000
     except:
-        current_rd = 124.2  # Fallback
+        current_rd = 124.2
     
     years_to_target = target_year - end_year
     required_cagr = calculate_required_cagr(current_rd, target_amount, years_to_target)
@@ -529,14 +515,12 @@ if generate_report:
     with col3:
         st.metric("Required CAGR", f"{required_cagr:.1f}%")
     
-    # Generate executive narrative
     st.subheader("Executive Summary")
     with st.spinner("Generating executive narrative..."):
         try:
             narrative = generate_executive_narrative(
                 engine, report_data, target_amount, target_year, current_rd, start_year, end_year
             )
-            # Clean up LaTeX-style formatting
             narrative = narrative.replace('$', '')
             narrative = narrative.replace('\\', '')
             narrative = ' '.join(narrative.split())
@@ -545,7 +529,6 @@ if generate_report:
             st.error(f"Could not generate narrative: {str(e)}")
             narrative = "Executive summary could not be generated."
     
-    # Generate and offer PDF download
     try:
         pdf_bytes = generate_pdf_report(report_data, narrative, {
             "target_amount": target_amount,
@@ -559,7 +542,7 @@ if generate_report:
         st.download_button(
             label="📥 Download PDF Report",
             data=pdf_bytes,
-            file_name=f"UNT_Path_to_{target_amount}M_{num_years}yr_{datetime.now().strftime('%Y%m%d')}.pdf",
+            file_name=f"{short_name}_Path_to_{target_amount}M_{num_years}yr_{datetime.now().strftime('%Y%m%d')}.pdf",
             mime="application/pdf",
             type="primary",
             use_container_width=True
@@ -577,21 +560,17 @@ for item in st.session_state.history:
         with st.expander("Generated SQL"):
             st.code(item['sql'], language="sql")
         
-        # Safely display results
         if item.get('results') is not None and len(item['results']) > 0:
             st.dataframe(item['results'], use_container_width=True)
         
-        # Display summary
         if item.get('summary'):
             st.info(f"📊 {item['summary']}")
         
-        # Regenerate chart from stored results instead of storing chart object
         if enable_viz and item.get('results') is not None and len(item['results']) > 0:
             chart = create_visualization(item['results'], item['question'])
             if chart:
                 st.plotly_chart(chart, use_container_width=True)
         
-        # Download button for each history item
         if item.get('results') is not None and len(item['results']) > 0:
             csv = item['results'].to_csv(index=False)
             st.download_button(
@@ -599,7 +578,7 @@ for item in st.session_state.history:
                 csv,
                 f"results_{item['question'][:20].replace(' ', '_')}.csv",
                 "text/csv",
-                key=f"download_{hash(item['question'])}"  # Unique key for each button
+                key=f"download_{hash(item['question'])}"
             )
 
 # Query input
@@ -613,33 +592,26 @@ if question:
         with st.spinner("Generating SQL and fetching results..."):
             try:
                 sql, results, summary = engine.ask(question)
-
-                # Log to Google Sheets
                 log_to_sheets(st.session_state.username, question, sql)
 
-                # Show SQL
                 with st.expander("Generated SQL"):
                     st.code(sql, language="sql")
 
-                # Show results
                 if results is not None and len(results) > 0:
                     st.dataframe(results, use_container_width=True)
                     st.success("Query executed successfully")
                 else:
                     st.warning("Query returned no results")
 
-                # Show summary
                 if summary:
                     st.info(f"📊 {summary}")
 
-                # Generate visualization
                 chart = None
                 if enable_viz and results is not None and len(results) > 0:
                     chart = create_visualization(results, question)
                     if chart:
                         st.plotly_chart(chart, use_container_width=True)
 
-                # Save to history (store summary, don't store chart object)
                 st.session_state.history.append({
                     'question': question,
                     'sql': sql,
@@ -647,13 +619,11 @@ if question:
                     'summary': summary
                 })
                 
-                # Limit history to last 20 conversations to prevent memory issues
                 if len(st.session_state.history) > 20:
                     st.session_state.history = st.session_state.history[-20:]
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-                # Still save failed queries to history for debugging
                 st.session_state.history.append({
                     'question': question,
                     'sql': 'Error generating SQL',
