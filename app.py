@@ -8,6 +8,8 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 import yaml
+from zoneinfo import ZoneInfo
+
 
 # Load config
 with open('config.yml', 'r') as f:
@@ -53,7 +55,7 @@ def log_to_sheets(username, question, sql):
             sheet_id = os.getenv('GOOGLE_SHEET_ID', '1QBwo8bAPBEDW9DVqtKh9VZEb8CgCLihXC8As_sO16o8')
         
         sheet = client.open_by_key(sheet_id).sheet1
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S')
         sheet.append_row([timestamp, username, question, sql])
     except Exception as e:
         pass
