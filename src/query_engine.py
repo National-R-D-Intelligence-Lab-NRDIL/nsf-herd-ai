@@ -10,6 +10,7 @@ import re
 import os
 from pathlib import Path
 import time
+import yaml
 
 
 class HERDQueryEngine:
@@ -18,11 +19,25 @@ class HERDQueryEngine:
     def __init__(self, api_key, db_path):
         self.client = genai.Client(api_key=api_key)
         self.db_path = db_path
-        self.schema = """
+        
+        # Load config
+        with open('config.yml', 'r') as f:
+            self.config = yaml.safe_load(f)
+        
+        # Build peer ID strings from config
+        inst_id = self.config['institution']['inst_id']
+        inst_name = self.config['institution']['name']
+        texas_ids = ", ".join([f"'{p['id']}'" for p in self.config['peers']['texas']])
+        national_ids = ", ".join([f"'{p['id']}'" for p in self.config['peers']['national']])
+        texas_with_inst = f"'{inst_id}', {texas_ids}"
+        national_with_inst = f"'{inst_id}', {national_ids}"
+        all_peer_ids = f"'{inst_id}', {texas_ids}, {national_ids}"
+        
+        self.schema = f"""
 Table: institutions
 Columns:
-- inst_id (TEXT): Institution identifier (e.g., '003594' for UNT)
-- name (TEXT): Full name (e.g., 'University of North Texas, Denton')
+- inst_id (TEXT): Institution identifier
+- name (TEXT): Full name
 - city, state (TEXT): Location
 - year (INTEGER): 2010-2024
 - total_rd (INTEGER): Total R&D expenditure ($)
@@ -31,107 +46,33 @@ Columns:
 CRITICAL - Institution name matching rules:
 1. ALWAYS use LIKE with wildcards for flexible matching
 2. Many names end with ', The' (e.g., 'University of Texas at Austin, The')
-3. Names vary across years - same institution may have different name formats
-4. Use multiple key terms with wildcards between them
+3. Use inst_id for exact matching when available
 
-Common abbreviations and their full forms:
-- 'UT' = 'University of Texas'
-- 'UNT' = 'University of North Texas'
-- 'A&M' or 'A and M' = 'A&M' (use LIKE '%A_M%' to match both)
-- 'SUNY' = 'State University of New York'
-- 'CUNY' = 'City University of New York'
-- 'Cal' or 'UC' = 'University of California'
-- 'USC' = 'University of Southern California'
-- 'MIT' = 'Massachusetts Institute of Technology'
-- 'St.' or 'Saint' = use LIKE '%St%' to match both
+Current Institution: inst_id = '{inst_id}' ({inst_name})
 
-Example name matching patterns:
-- 'UT Austin' -> WHERE name LIKE '%University of Texas%Austin%'
-- 'UT Dallas' -> WHERE name LIKE '%University of Texas%Dallas%'
-- 'Texas A&M' (main) -> WHERE name LIKE '%Texas A_M%College Station%'
-- 'Ohio State' -> WHERE name LIKE '%Ohio State%'
-- 'UNT' or 'UNT Denton' -> WHERE name LIKE '%North Texas%Denton%'
-- 'Penn State' -> WHERE name LIKE '%Pennsylvania State%'
-- 'Michigan' (main) -> WHERE name LIKE '%University of Michigan%Ann Arbor%'
-- 'SUNY Buffalo' -> WHERE name LIKE '%New York%Buffalo%'
-- 'UC Berkeley' -> WHERE name LIKE '%California%Berkeley%'
-- 'MIT' -> WHERE name LIKE '%Massachusetts Institute of Technology%'
+Texas Peers (with current institution):
+{texas_with_inst}
 
-For state filtering, use the state column:
-- Texas universities: WHERE state = 'TX'
-- California universities: WHERE state = 'CA'
+National Peers (with current institution):
+{national_with_inst}
 
-Growth rate calculation:
-To calculate growth rate between two years:
-((end_value - start_value) / start_value) * 100 as growth_pct
+All Peers:
+{all_peer_ids}
 
-Example - Growth rate query pattern:
-SELECT 
-    name,
-    MAX(CASE WHEN year = 2020 THEN total_rd END) as start_value,
-    MAX(CASE WHEN year = 2024 THEN total_rd END) as end_value,
-    ROUND(((MAX(CASE WHEN year = 2024 THEN total_rd END) - MAX(CASE WHEN year = 2020 THEN total_rd END)) * 100.0 / 
-           MAX(CASE WHEN year = 2020 THEN total_rd END)), 1) as growth_pct
-FROM institutions
-WHERE year IN (2020, 2024)
-GROUP BY name
-HAVING start_value > 0 AND end_value > 0
-ORDER BY growth_pct DESC;
-
-UNT PEER INSTITUTIONS (for benchmarking and comparison):
-When user asks about "peers", "peer institutions", "benchmarking", or "how UNT compares":
-
-Use inst_id for exact matching (more reliable than name matching):
-
-UNT: inst_id = '003594'
-
-Texas Peers (10 inst_ids):
-'003658' -- UT Austin
-'003632' -- Texas A&M (College Station)
-'003656' -- UT Arlington
-'009741' -- UT Dallas
-'102077' -- UTRGV
-'003661' -- UTEP
-'010115' -- UTSA
-'003652' -- University of Houston
-'003644' -- Texas Tech
-'003615' -- Texas State
-
-National Peers (10 inst_ids):
-'001081' -- Arizona State
-'001574' -- Georgia State
-'003954' -- University of Central Florida
-'001825' -- Purdue
-'001316' -- UC Riverside
-'001776' -- University of Illinois Chicago
-'003675' -- University of Utah
-'330008' -- University of South Florida
-'003509' -- University of Memphis
-'002029' -- Tulane
-
-Example - UNT vs Texas peers query:
-SELECT name, total_rd
-FROM institutions
-WHERE year = 2024 AND inst_id IN ('003594', '003658', '003632', '003656', '009741', '102077', '003661', '010115', '003652', '003644', '003615')
+Example - vs Texas peers:
+SELECT name, total_rd FROM institutions 
+WHERE year = 2024 AND inst_id IN ({texas_with_inst})
 ORDER BY total_rd DESC;
 
-Example - UNT vs National peers query:
-SELECT name, total_rd
-FROM institutions
-WHERE year = 2024 AND inst_id IN ('003594', '001081', '001574', '003954', '001825', '001316', '001776', '003675', '330008', '003509', '002029')
-ORDER BY total_rd DESC;
-
-Example - UNT vs ALL peers query:
-SELECT name, total_rd
-FROM institutions
-WHERE year = 2024 AND inst_id IN ('003594', '003658', '003632', '003656', '009741', '102077', '003661', '010115', '003652', '003644', '003615', '001081', '001574', '003954', '001825', '001316', '001776', '003675', '330008', '003509', '002029')
+Example - vs National peers:
+SELECT name, total_rd FROM institutions 
+WHERE year = 2024 AND inst_id IN ({national_with_inst})
 ORDER BY total_rd DESC;
 
 CAGR (Compound Annual Growth Rate) calculation:
-CAGR measures average annual growth rate over a period.
 Formula: ((end_value / start_value) ^ (1/years) - 1) * 100
 
-Example - 5-year CAGR for total R&D:
+Example - 5-year CAGR:
 SELECT 
     name,
     MAX(CASE WHEN year = 2019 THEN total_rd END) as rd_2019,
@@ -139,31 +80,10 @@ SELECT
     ROUND((POWER(MAX(CASE WHEN year = 2024 THEN total_rd END) * 1.0 / 
            NULLIF(MAX(CASE WHEN year = 2019 THEN total_rd END), 0), 1.0/5) - 1) * 100, 1) as cagr_5yr
 FROM institutions
-WHERE state = 'TX' AND year IN (2019, 2024)
+WHERE inst_id IN ({texas_with_inst}) AND year IN (2019, 2024)
 GROUP BY name
-HAVING MAX(CASE WHEN year = 2019 THEN total_rd END) > 0 AND MAX(CASE WHEN year = 2024 THEN total_rd END) > 0
+HAVING rd_2019 > 0 AND rd_2024 > 0
 ORDER BY cagr_5yr DESC;
-
-Example - CAGR by funding source:
-SELECT 
-    name,
-    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN total_rd END) * 1.0 / 
-           NULLIF(MAX(CASE WHEN year = 2019 THEN total_rd END), 0), 1.0/5) - 1) * 100, 1) as total_cagr,
-    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN federal END) * 1.0 / 
-           NULLIF(MAX(CASE WHEN year = 2019 THEN federal END), 0), 1.0/5) - 1) * 100, 1) as federal_cagr,
-    ROUND((POWER(MAX(CASE WHEN year = 2024 THEN institutional END) * 1.0 / 
-           NULLIF(MAX(CASE WHEN year = 2019 THEN institutional END), 0), 1.0/5) - 1) * 100, 1) as institutional_cagr
-FROM institutions
-WHERE state = 'TX' AND year IN (2019, 2024)
-GROUP BY name
-HAVING MAX(CASE WHEN year = 2019 THEN total_rd END) > 0 AND MAX(CASE WHEN year = 2024 THEN total_rd END) > 0
-ORDER BY total_cagr DESC;
-
-CAGR benchmarks for Texas universities (2019-2024):
-- Total R&D: Top performers 15-32%, median ~8%
-- Federal: Top performers 20-27%, median ~10%
-- Institutional: Top performers 21-35%, median ~8%
-- Key insight: Institutions achieving 14%+ total CAGR typically have institutional investment CAGR above 20%
 """
 
     def _clean_sql(self, text):
@@ -202,16 +122,11 @@ CAGR benchmarks for Texas universities (2019-2024):
 Convert to SQLite query: "{question}"
 
 Rules:
-- Use clear column names (avoid CAST, complex expressions in SELECT)
-- Include institution names and identifying info
-- Show raw values AND calculations (not just calculations)
-- Sort ascending by default (oldest to newest, smallest to largest)
-- Match institution names exactly as user specifies
-- "UNT Denton" should match only 'University of North Texas, Denton'
-- Don't use wildcards unless user says "all UNT campuses"
-Return ONLY the SQL query."""
+- Use clear column names
+- Include institution names
+- Show raw values AND calculations
+- Return ONLY the SQL query."""
 
-        # Retry up to 3 times for 503 errors
         for attempt in range(3):
             try:
                 response = self.client.models.generate_content(
@@ -245,7 +160,6 @@ Return ONLY the SQL query."""
         if results.empty:
             return "No data found."
         
-        # Convert results to simple text
         results_text = results.to_string(index=False, max_rows=20)
         row_count = len(results)
         
@@ -257,22 +171,13 @@ Data ({row_count} rows):
 {results_text}
 
 Guidelines:
-- State the KEY FINDING first (who is highest/lowest, what's the trend)
-- Provide CONTEXT (rankings, comparisons, patterns)
-- If relevant, note strategic implications (gaps, opportunities, benchmarks)
-- Use specific numbers from the table
-- Do NOT speculate beyond the data
-- Do NOT use phrases like "based on the data" or "the table shows"
-- Write in direct, executive tone
-
-Example good summaries:
-- "UNT Denton's 9.6% CAGR ranks 8th of 11 Texas peers. Texas State (20.7%) and UTSA (15.3%) demonstrate that 14%+ growth is achievable at similar institutional scale."
-- "Federal funding grew 20% annually while institutional investment grew only 4.9%. High-growth peers like Texas State show 27% institutional CAGR, suggesting this is the primary gap."
-- "UNT ranks 10th among Texas peers at $124M total R&D. The gap to 9th place (UT Arlington, $154M) is $30M."
+- State the KEY FINDING first
+- Provide CONTEXT (rankings, comparisons)
+- Use specific numbers
+- Direct, executive tone
 
 Summary:"""
         
-        # Retry up to 3 times for 503 errors
         for attempt in range(3):
             try:
                 response = self.client.models.generate_content(
@@ -286,21 +191,15 @@ Summary:"""
                     continue
                 raise e
         
-        # Clean up the response
         summary = response.text.strip()
-        
-        # Remove LaTeX-style math formatting that Gemini sometimes adds
         summary = summary.replace('$', '')
         summary = summary.replace('\\', '')
-        
-        # Clean up any double spaces
         summary = ' '.join(summary.split())
         
         return summary
 
     def generate_narrative(self, prompt):
         """Generate text using the model for narrative synthesis"""
-        # Retry up to 3 times for 503 errors
         for attempt in range(3):
             try:
                 response = self.client.models.generate_content(
