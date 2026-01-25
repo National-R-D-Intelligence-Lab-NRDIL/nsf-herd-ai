@@ -1,0 +1,9 @@
+.git
+.gitignore
+.ipynb_checkpoints
+__pycache__
+*.pyc
+.env
+secrets/
+github-recovery-codes.txt
+usage_log.txt
