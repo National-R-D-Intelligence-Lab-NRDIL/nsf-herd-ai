@@ -29,11 +29,19 @@ def get_gsheet_client():
         import gspread
         from google.oauth2.service_account import Credentials
         
+        creds_dict = None
         if hasattr(st, 'secrets') and 'GOOGLE_SHEETS_CREDS' in st.secrets:
-            creds_dict = json.loads(st.secrets['GOOGLE_SHEETS_CREDS'])
+            try:
+                creds_dict = json.loads(st.secrets['GOOGLE_SHEETS_CREDS'])
+            except:
+                pass
         elif os.getenv('GOOGLE_SHEETS_CREDS'):
-            creds_dict = json.loads(os.getenv('GOOGLE_SHEETS_CREDS'))
-        else:
+            try:
+                creds_dict = json.loads(os.getenv('GOOGLE_SHEETS_CREDS'))
+            except:
+                pass
+        
+        if not creds_dict:
             return None
         
         scopes = [
@@ -44,9 +52,7 @@ def get_gsheet_client():
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.warning(f"Could not connect to Google Sheets: {e}")
         return None
-
 def log_to_sheets(username, question, sql):
     """Log user question to Google Sheets"""
     try:
