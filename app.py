@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 import yaml
 from zoneinfo import ZoneInfo
+import warnings
+warnings.filterwarnings('ignore')
 
 # Initialize session state first
 if 'logged_in' not in st.session_state:
@@ -29,20 +31,19 @@ def get_gsheet_client():
         import gspread
         from google.oauth2.service_account import Credentials
         
-        creds_dict = None
-        if hasattr(st, 'secrets') and 'GOOGLE_SHEETS_CREDS' in st.secrets:
+        # Try environment variable first (Railway), then Streamlit secrets
+        creds_json = os.getenv('GOOGLE_SHEETS_CREDS')
+        if not creds_json:
             try:
-                creds_dict = json.loads(st.secrets['GOOGLE_SHEETS_CREDS'])
-            except:
-                pass
-        elif os.getenv('GOOGLE_SHEETS_CREDS'):
-            try:
-                creds_dict = json.loads(os.getenv('GOOGLE_SHEETS_CREDS'))
+                if hasattr(st, 'secrets') and 'GOOGLE_SHEETS_CREDS' in st.secrets:
+                    creds_json = st.secrets['GOOGLE_SHEETS_CREDS']
             except:
                 pass
         
-        if not creds_dict:
+        if not creds_json:
             return None
+        
+        creds_dict = json.loads(creds_json)
         
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
@@ -53,6 +54,7 @@ def get_gsheet_client():
         return client
     except Exception as e:
         return None
+
 def log_to_sheets(username, question, sql):
     """Log user question to Google Sheets"""
     try:
@@ -60,17 +62,23 @@ def log_to_sheets(username, question, sql):
         if client is None:
             return
         
-        if hasattr(st, 'secrets') and 'GOOGLE_SHEET_ID' in st.secrets:
-            sheet_id = st.secrets['GOOGLE_SHEET_ID']
-        else:
-            sheet_id = os.getenv('GOOGLE_SHEET_ID', '1QBwo8bAPBEDW9DVqtKh9VZEb8CgCLihXC8As_sO16o8')
+        # Try environment variable first (Railway), then Streamlit secrets
+        sheet_id = os.getenv('GOOGLE_SHEET_ID')
+        if not sheet_id:
+            try:
+                if hasattr(st, 'secrets') and 'GOOGLE_SHEET_ID' in st.secrets:
+                    sheet_id = st.secrets['GOOGLE_SHEET_ID']
+            except:
+                pass
+        
+        if not sheet_id:
+            sheet_id = '1QBwo8bAPBEDW9DVqtKh9VZEb8CgCLihXC8As_sO16o8'
         
         sheet = client.open_by_key(sheet_id).sheet1
         timestamp = datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M:%S')
         sheet.append_row([timestamp, username, question, sql])
     except Exception as e:
         pass
-
 # ============================================================
 # AUTHENTICATION SYSTEM
 # ============================================================
