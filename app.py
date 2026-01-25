@@ -10,11 +10,6 @@ import json
 import yaml
 from zoneinfo import ZoneInfo
 
-# Initialize session state
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'username' not in st.session_state:
-    st.session_state.username = None
     
 # Load config
 with open('config.yml', 'r') as f:
@@ -72,6 +67,8 @@ def check_login():
     """Simple login system"""
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
+    if 'username' not in st.session_state:
+        st.session_state.username = None
     
     if not st.session_state.logged_in:
         st.title("🔐 Login Required")
