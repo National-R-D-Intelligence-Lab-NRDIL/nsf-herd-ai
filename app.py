@@ -9,6 +9,14 @@ from datetime import datetime
 import json
 import yaml
 from zoneinfo import ZoneInfo
+# Debug: Print all environment variables
+import sys
+print("=" * 50, file=sys.stderr)
+print("ENVIRONMENT VARIABLES:", file=sys.stderr)
+for key in ['GEMINI_API_KEY', 'DATABASE_PATH', 'PASSWORD']:
+    val = os.getenv(key)
+    print(f"{key} = {val}", file=sys.stderr)
+print("=" * 50, file=sys.stderr)
 
 # Initialize session state first
 if 'logged_in' not in st.session_state:
