@@ -10,6 +10,11 @@ import json
 import yaml
 from zoneinfo import ZoneInfo
 
+# Initialize session state first
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
     
 # Load config
 with open('config.yml', 'r') as f:
@@ -65,10 +70,10 @@ def log_to_sheets(username, question, sql):
 # ============================================================
 def check_login():
     """Simple login system"""
-    # Initialize first
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
-        st.session_state.username = ""
+    if 'username' not in st.session_state:
+        st.session_state.username = None
     
     if not st.session_state.logged_in:
         st.title("🔐 Login Required")
@@ -103,19 +108,19 @@ from query_engine import HERDQueryEngine
 # Load environment variables
 load_dotenv()
 
-try:
-    api_key = st.secrets.get('GEMINI_API_KEY', None)
-except FileNotFoundError:
-    api_key = None
-if api_key is None:
-    api_key = os.getenv('GEMINI_API_KEY')
+api_key = os.getenv('GEMINI_API_KEY')
+if not api_key:
+    try:
+        api_key = st.secrets.get('GEMINI_API_KEY')
+    except:
+        api_key = None
 
-try:
-    db_path = st.secrets.get('DATABASE_PATH', None)
-except FileNotFoundError:
-    db_path = None
-if db_path is None:
-    db_path = os.getenv('DATABASE_PATH')
+db_path = os.getenv('DATABASE_PATH')
+if not db_path:
+    try:
+        db_path = st.secrets.get('DATABASE_PATH')
+    except:
+        db_path = None
 
 # Initialize query engine
 engine = HERDQueryEngine(api_key, db_path)
