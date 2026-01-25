@@ -9,14 +9,6 @@ from datetime import datetime
 import json
 import yaml
 from zoneinfo import ZoneInfo
-# Debug: Print all environment variables
-import sys
-print("=" * 50, file=sys.stderr)
-print("ENVIRONMENT VARIABLES:", file=sys.stderr)
-for key in ['GEMINI_API_KEY', 'DATABASE_PATH', 'PASSWORD']:
-    val = os.getenv(key)
-    print(f"{key} = {val}", file=sys.stderr)
-print("=" * 50, file=sys.stderr)
 
 # Initialize session state first
 if 'logged_in' not in st.session_state:
@@ -113,22 +105,22 @@ check_login()
 sys.path.append('src')
 from query_engine import HERDQueryEngine
 
-# Load environment variables
-load_dotenv()
-
+# Get environment variables from Railway
 api_key = os.getenv('GEMINI_API_KEY')
-if not api_key:
-    try:
-        api_key = st.secrets.get('GEMINI_API_KEY')
-    except:
-        api_key = None
-
 db_path = os.getenv('DATABASE_PATH')
+
+# Fallback to local .env if running locally
+if not api_key:
+    load_dotenv()
+    api_key = os.getenv('GEMINI_API_KEY')
+
 if not db_path:
-    try:
-        db_path = st.secrets.get('DATABASE_PATH')
-    except:
-        db_path = None
+    db_path = os.getenv('DATABASE_PATH', 'data/herd.db')
+
+# Error if still no API key
+if not api_key:
+    st.error("❌ GEMINI_API_KEY not configured. Check Railway Variables or .env file.")
+    st.stop()
 
 # Initialize query engine
 engine = HERDQueryEngine(api_key, db_path)
