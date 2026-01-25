@@ -65,10 +65,10 @@ def log_to_sheets(username, question, sql):
 # ============================================================
 def check_login():
     """Simple login system"""
+    # Initialize first
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
-    if 'username' not in st.session_state:
-        st.session_state.username = None
+        st.session_state.username = ""
     
     if not st.session_state.logged_in:
         st.title("🔐 Login Required")
@@ -79,7 +79,7 @@ def check_login():
         if st.button("Login"):
             try:
                 correct_password = st.secrets.get('PASSWORD', None)
-            except FileNotFoundError:
+            except (FileNotFoundError, AttributeError):
                 correct_password = None
             
             if correct_password is None:
