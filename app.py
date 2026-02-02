@@ -19,13 +19,21 @@ if 'username' not in st.session_state:
     st.session_state.username = None
     
 # Load config
+# Load config
 try:
-    config_file = st.secrets.get('CONFIG_FILE', os.getenv('CONFIG_FILE', 'configs/template.yml'))
+    # Try to load from secrets first (cloud deployment)
+    if 'config' in st.secrets:
+        config = dict(st.secrets['config'])
+    else:
+        # Fall back to file (local development)
+        config_file = os.getenv('CONFIG_FILE', 'configs/template.yml')
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
 except:
-    config_file = os.getenv('CONFIG_FILE', 'configs/template.yml')
-
-with open(config_file, 'r') as f:
-    config = yaml.safe_load(f)
+    # Last resort: template file
+    config_file = 'configs/template.yml'
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
 
 # ============================================================
 # GOOGLE SHEETS LOGGING
