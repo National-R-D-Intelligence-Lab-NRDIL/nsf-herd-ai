@@ -1,99 +1,44 @@
 """
 NSF HERD Query Engine
-Handles AI-powered SQL generation and execution
+Converts natural language questions into SQL queries against the HERD database,
+executes them, and synthesizes the results into readable summaries.
 """
 
 from google import genai
 import pandas as pd
 import sqlite3
 import re
-import os
-from pathlib import Path
 import time
-import yaml
 
 
-class HERDQueryEngine:
-    """AI-powered query engine for NSF HERD data"""
-
-    def __init__(self, api_key, db_path, config):
-        self.client = genai.Client(api_key=api_key)
-        self.db_path = db_path
-        
-        # Use passed config instead of loading from file
-        self.config = config
-        
-        # Build peer ID strings from config
-        inst_id = self.config['institution']['inst_id']
-        inst_name = self.config['institution']['name']
-        
-        # Handle empty peer lists (for generic/dynamic mode)
-        texas_peers = self.config['peers'].get('texas', [])
-        national_peers = self.config['peers'].get('national', [])
-        
-        if texas_peers:
-            texas_ids = ", ".join([f"'{p['id']}'" for p in texas_peers])
-            texas_with_inst = f"'{inst_id}', {texas_ids}"
-        else:
-            texas_ids = ""
-            texas_with_inst = f"'{inst_id}'"
-        
-        if national_peers:
-            national_ids = ", ".join([f"'{p['id']}'" for p in national_peers])
-            national_with_inst = f"'{inst_id}', {national_ids}"
-        else:
-            national_ids = ""
-            national_with_inst = f"'{inst_id}'"
-        
-        if texas_peers and national_peers:
-            all_peer_ids = f"'{inst_id}', {texas_ids}, {national_ids}"
-        elif texas_peers:
-            all_peer_ids = f"'{inst_id}', {texas_ids}"
-        elif national_peers:
-            all_peer_ids = f"'{inst_id}', {national_ids}"
-        else:
-            all_peer_ids = f"'{inst_id}'"
-        
-        self.schema = f"""
+# Database schema fed to the AI so it knows exactly what it's working with.
+# Includes naming quirks and CAGR examples that trip up most models without guidance.
+SCHEMA_PROMPT = """
 Table: institutions
 Columns:
-- inst_id (TEXT): Institution identifier
-- name (TEXT): Full name
-- city, state (TEXT): Location
-- year (INTEGER): 2010-2024
-- total_rd (INTEGER): Total R&D expenditure ($)
-- federal, state_local, business, nonprofit, institutional, other_sources (INTEGER): Funding sources ($)
+- inst_id (TEXT): Institution identifier (e.g. '003594')
+- name (TEXT): Full institution name as reported by NSF
+- city (TEXT): City
+- state (TEXT): Two-letter state code (e.g. 'TX')
+- year (INTEGER): Fiscal year, range 2010-2024
+- total_rd (INTEGER): Total R&D expenditure in dollars
+- federal (INTEGER): Federal funding in dollars
+- state_local (INTEGER): State and local government funding in dollars
+- business (INTEGER): Business/industry funding in dollars
+- nonprofit (INTEGER): Nonprofit organization funding in dollars
+- institutional (INTEGER): Institution's own funding in dollars
+- other_sources (INTEGER): All other funding sources in dollars
 
-CRITICAL - Institution name matching rules:
-1. ALWAYS use LIKE with wildcards for flexible matching
-2. Many names end with ', The' (e.g., 'University of Texas at Austin, The')
-3. Use inst_id for exact matching when available
-
-Current Institution: inst_id = '{inst_id}' ({inst_name})
-
-Texas Peers (with current institution):
-{texas_with_inst}
-
-National Peers (with current institution):
-{national_with_inst}
-
-All Peers:
-{all_peer_ids}
-
-Example - vs Texas peers:
-SELECT name, total_rd FROM institutions 
-WHERE year = 2024 AND inst_id IN ({texas_with_inst})
-ORDER BY total_rd DESC;
-
-Example - vs National peers:
-SELECT name, total_rd FROM institutions 
-WHERE year = 2024 AND inst_id IN ({national_with_inst})
-ORDER BY total_rd DESC;
+Name matching rules - these matter:
+1. ALWAYS use LIKE with wildcards when matching by name. Names are inconsistent.
+2. Many institutions have ', The' appended (e.g. 'University of Texas at Austin, The')
+3. Some have city appended (e.g. 'University of North Texas, Denton')
+4. When in doubt, use inst_id for exact matching instead of name strings.
 
 CAGR (Compound Annual Growth Rate) calculation:
 Formula: ((end_value / start_value) ^ (1/years) - 1) * 100
 
-Example - 5-year CAGR:
+Example - 5-year CAGR across all institutions:
 SELECT 
     name,
     MAX(CASE WHEN year = 2019 THEN total_rd END) as rd_2019,
@@ -101,14 +46,39 @@ SELECT
     ROUND((POWER(MAX(CASE WHEN year = 2024 THEN total_rd END) * 1.0 / 
            NULLIF(MAX(CASE WHEN year = 2019 THEN total_rd END), 0), 1.0/5) - 1) * 100, 1) as cagr_5yr
 FROM institutions
-WHERE inst_id IN ({texas_with_inst}) AND year IN (2019, 2024)
+WHERE year IN (2019, 2024)
 GROUP BY name
 HAVING rd_2019 > 0 AND rd_2024 > 0
 ORDER BY cagr_5yr DESC;
+
+Example - compare specific institutions:
+SELECT name, year, total_rd, federal, institutional 
+FROM institutions 
+WHERE name LIKE '%Ohio State%' AND year BETWEEN 2020 AND 2024
+ORDER BY year;
+
+Example - top N by funding in a given year:
+SELECT name, state, total_rd 
+FROM institutions 
+WHERE year = 2024 
+ORDER BY total_rd DESC 
+LIMIT 10;
 """
 
+
+class HERDQueryEngine:
+    """Handles the full pipeline: question → SQL → results → summary"""
+
+    def __init__(self, api_key, db_path):
+        self.client = genai.Client(api_key=api_key)
+        self.db_path = db_path
+
     def _clean_sql(self, text):
-        """Extract clean SQL from AI response"""
+        """
+        Pulls the actual SQL out of whatever the model returns.
+        Models like to wrap SQL in markdown fences, add explanations after it,
+        or include commentary lines — this strips all of that away.
+        """
         text = re.sub(r'```[\w]*\n?', '', text)
         text = re.sub(r'```', '', text)
 
@@ -126,6 +96,7 @@ ORDER BY cagr_5yr DESC;
                 if ';' in line:
                     sql_lines.append(line.split(';')[0] + ';')
                     break
+                # Skip lines that are clearly commentary, not SQL
                 elif line and not line.startswith(('Note:', 'This', 'The', '--')):
                     sql_lines.append(line)
 
@@ -135,18 +106,21 @@ ORDER BY cagr_5yr DESC;
         return sql
 
     def generate_sql(self, question):
-        """Convert natural language to SQL with retry logic"""
+        """
+        Sends the question + schema to Gemini, gets back a SQL query.
+        Retries on 503s since the API can be flaky under load.
+        """
         prompt = f"""Given this database schema:
 
-{self.schema}
+{SCHEMA_PROMPT}
 
-Convert to SQLite query: "{question}"
+Convert this to a SQLite query: "{question}"
 
 Rules:
-- Use clear column names
-- Include institution names
-- Show raw values AND calculations
-- Return ONLY the SQL query."""
+- Use clear, descriptive column aliases
+- Always include institution names in results
+- Show both raw values and any calculated metrics
+- Return ONLY the SQL query, nothing else."""
 
         for attempt in range(3):
             try:
@@ -162,29 +136,34 @@ Rules:
                 raise e
 
     def execute_sql(self, sql):
-        """Execute SQL and return DataFrame"""
+        """Runs the SQL against the local SQLite database, returns a DataFrame."""
         conn = sqlite3.connect(self.db_path)
         result = pd.read_sql(sql, conn)
         conn.close()
         return result
 
     def ask(self, question):
-        """Main interface: question -> SQL -> results -> summary"""
+        """
+        Main entry point. Takes a plain English question,
+        runs it through the full pipeline, returns everything the UI needs.
+        """
         sql = self.generate_sql(question)
         results = self.execute_sql(sql)
         summary = self.summarize_results(question, results)
         return sql, results, summary
 
     def summarize_results(self, question, results):
-        """Generate strategic summary from results"""
-        
+        """
+        Takes the query results and asks Gemini to write a short, sharp summary.
+        Keeps it to 2-3 sentences focused on the actual numbers.
+        """
         if results.empty:
-            return "No data found."
-        
+            return "No data found for this query."
+
         results_text = results.to_string(index=False, max_rows=20)
         row_count = len(results)
-        
-        prompt = f"""You are a strategic research analyst. Based ONLY on this data, write a 2-3 sentence insight.
+
+        prompt = f"""You are a research funding analyst. Based ONLY on this data, write a 2-3 sentence insight.
 
 Question: {question}
 
@@ -192,13 +171,13 @@ Data ({row_count} rows):
 {results_text}
 
 Guidelines:
-- State the KEY FINDING first
-- Provide CONTEXT (rankings, comparisons)
-- Use specific numbers
-- Direct, executive tone
+- Lead with the key finding
+- Include specific numbers
+- Add context (rankings, comparisons) where the data supports it
+- Keep it direct, no filler words
 
 Summary:"""
-        
+
         for attempt in range(3):
             try:
                 response = self.client.models.generate_content(
@@ -211,25 +190,10 @@ Summary:"""
                     time.sleep(2 ** attempt)
                     continue
                 raise e
-        
-        summary = response.text.strip()
-        summary = summary.replace('$', '')
-        summary = summary.replace('\\', '')
-        summary = ' '.join(summary.split())
-        
-        return summary
 
-    def generate_narrative(self, prompt):
-        """Generate text using the model for narrative synthesis"""
-        for attempt in range(3):
-            try:
-                response = self.client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt
-                )
-                return response.text
-            except Exception as e:
-                if '503' in str(e) and attempt < 2:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise e
+        # Dollar signs and backslashes cause rendering issues in Streamlit
+        summary = response.text.strip()
+        summary = summary.replace('$', '').replace('\\', '')
+        summary = ' '.join(summary.split())
+
+        return summary
