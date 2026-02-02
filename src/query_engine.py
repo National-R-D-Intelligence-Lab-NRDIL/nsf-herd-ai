@@ -16,7 +16,7 @@ import yaml
 class HERDQueryEngine:
     """AI-powered query engine for NSF HERD data"""
 
-    def __init__(self, api_key, db_path, config):  # ← Add config parameter
+    def __init__(self, api_key, db_path, config):
         self.client = genai.Client(api_key=api_key)
         self.db_path = db_path
         
@@ -25,15 +25,34 @@ class HERDQueryEngine:
         
         # Build peer ID strings from config
         inst_id = self.config['institution']['inst_id']
-        
-        # Build peer ID strings from config
-        inst_id = self.config['institution']['inst_id']
         inst_name = self.config['institution']['name']
-        texas_ids = ", ".join([f"'{p['id']}'" for p in self.config['peers']['texas']])
-        national_ids = ", ".join([f"'{p['id']}'" for p in self.config['peers']['national']])
-        texas_with_inst = f"'{inst_id}', {texas_ids}"
-        national_with_inst = f"'{inst_id}', {national_ids}"
-        all_peer_ids = f"'{inst_id}', {texas_ids}, {national_ids}"
+        
+        # Handle empty peer lists (for generic/dynamic mode)
+        texas_peers = self.config['peers'].get('texas', [])
+        national_peers = self.config['peers'].get('national', [])
+        
+        if texas_peers:
+            texas_ids = ", ".join([f"'{p['id']}'" for p in texas_peers])
+            texas_with_inst = f"'{inst_id}', {texas_ids}"
+        else:
+            texas_ids = ""
+            texas_with_inst = f"'{inst_id}'"
+        
+        if national_peers:
+            national_ids = ", ".join([f"'{p['id']}'" for p in national_peers])
+            national_with_inst = f"'{inst_id}', {national_ids}"
+        else:
+            national_ids = ""
+            national_with_inst = f"'{inst_id}'"
+        
+        if texas_peers and national_peers:
+            all_peer_ids = f"'{inst_id}', {texas_ids}, {national_ids}"
+        elif texas_peers:
+            all_peer_ids = f"'{inst_id}', {texas_ids}"
+        elif national_peers:
+            all_peer_ids = f"'{inst_id}', {national_ids}"
+        else:
+            all_peer_ids = f"'{inst_id}'"
         
         self.schema = f"""
 Table: institutions
