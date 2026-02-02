@@ -19,7 +19,12 @@ if 'username' not in st.session_state:
     st.session_state.username = None
     
 # Load config
-with open('config.yml', 'r') as f:
+try:
+    config_file = st.secrets.get('CONFIG_FILE', os.getenv('CONFIG_FILE', 'configs/template.yml'))
+except:
+    config_file = os.getenv('CONFIG_FILE', 'configs/template.yml')
+
+with open(config_file, 'r') as f:
     config = yaml.safe_load(f)
 
 # ============================================================
@@ -79,6 +84,7 @@ def log_to_sheets(username, question, sql):
         sheet.append_row([timestamp, username, question, sql])
     except Exception as e:
         pass
+
 # ============================================================
 # AUTHENTICATION SYSTEM
 # ============================================================
@@ -152,7 +158,7 @@ default_target = config['targets']['default_amount_millions']
 default_year = config['targets']['default_target_year']
 
 # Streamlit UI
-st.title(f"NSF HERD AI Assistant - {short_name}")
+st.title(f"{header_text}")
 st.markdown(f"Ask questions about university R&D funding ({config['analysis']['data_start_year']}-{config['analysis']['data_end_year']})")
 
 # Sidebar for visualization options
@@ -166,52 +172,55 @@ with st.sidebar:
         st.rerun()
 
 # ============================================================
-# STRATEGIC REPORT GENERATOR
+# STRATEGIC REPORT GENERATOR (Only for static peer mode)
 # ============================================================
-with st.sidebar:
-    st.divider()
-    st.header("📊 Strategic Report")
-    
-    analysis_period = st.selectbox(
-        "Analysis Period",
-        options=["5-Year (2019-2024)", "10-Year (2014-2024)", "Custom"],
-        index=0
-    )
-    
-    if analysis_period == "Custom":
-        col1, col2 = st.columns(2)
-        with col1:
-            start_year = st.number_input("Start Year", min_value=2010, max_value=2023, value=2015)
-        with col2:
-            end_year = st.number_input("End Year", min_value=2011, max_value=2024, value=2024)
-    elif analysis_period == "5-Year (2019-2024)":
-        start_year = 2019
-        end_year = 2024
-    else:
-        start_year = 2014
-        end_year = 2024
-    
-    target_amount = st.number_input(
-        "Target R&D ($M)", 
-        min_value=100, 
-        max_value=500, 
-        value=default_target,
-        step=10
-    )
-    
-    target_year = st.selectbox(
-        "Target Year",
-        options=[2028, 2029, 2030, 2031, 2032],
-        index=[2028, 2029, 2030, 2031, 2032].index(default_year)
-    )
-    
-    peer_group = st.selectbox(
-        "Peer Group",
-        options=["Texas Peers", "National Peers"],
-        index=0
-    )
-    
-    generate_report = st.button("🚀 Generate Report", type="primary", use_container_width=True)
+if config['peers'].get('mode') == 'static':
+    with st.sidebar:
+        st.markdown("---")
+        st.header("📊 Custom Report")
+        
+        analysis_period = st.selectbox(
+            "Analysis Period",
+            options=["5-Year (2019-2024)", "10-Year (2014-2024)", "Custom"],
+            index=0
+        )
+        
+        if analysis_period == "Custom":
+            col1, col2 = st.columns(2)
+            with col1:
+                start_year = st.number_input("Start Year", min_value=2010, max_value=2023, value=2015)
+            with col2:
+                end_year = st.number_input("End Year", min_value=2011, max_value=2024, value=2024)
+        elif analysis_period == "5-Year (2019-2024)":
+            start_year = 2019
+            end_year = 2024
+        else:
+            start_year = 2014
+            end_year = 2024
+        
+        target_amount = st.number_input(
+            "Target R&D ($M)", 
+            min_value=100, 
+            max_value=500, 
+            value=default_target,
+            step=10
+        )
+        
+        target_year = st.selectbox(
+            "Target Year",
+            options=[2028, 2029, 2030, 2031, 2032],
+            index=[2028, 2029, 2030, 2031, 2032].index(default_year)
+        )
+        
+        peer_group = st.selectbox(
+            "Peer Group",
+            options=["Texas Peers", "National Peers"],
+            index=0
+        )
+        
+        generate_report = st.button("🚀 Generate Report", type="primary", use_container_width=True)
+else:
+    generate_report = False
 
 # Example questions
 with st.expander("Example Questions"):

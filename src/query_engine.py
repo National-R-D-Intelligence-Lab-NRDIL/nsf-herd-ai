@@ -21,8 +21,9 @@ class HERDQueryEngine:
         self.db_path = db_path
         
         # Load config
-        with open('config.yml', 'r') as f:
-            self.config = yaml.safe_load(f)
+        config_file = os.getenv('CONFIG_FILE', 'configs/template.yml')
+        with open(config_file, 'r') as f:
+            self.config = yaml.safe_load(f) 
         
         # Build peer ID strings from config
         inst_id = self.config['institution']['inst_id']

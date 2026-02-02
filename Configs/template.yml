@@ -1,0 +1,39 @@
+# ============================================================
+# NSF HERD AI Framework - Template Configuration
+# ============================================================
+# Public template for self-service deployment
+# Copy this file and customize for your institution
+
+institution:
+  inst_id: "000000"  # Replace with your institution ID from NSF HERD data
+  name: "Research Institution"  # Replace with your institution name
+  short_name: "RI"  # Replace with your institution abbreviation
+  city: "City"
+  state: "ST"
+
+branding:
+  primary_color: "#003366"      # Replace with your institution's primary color
+  secondary_color: "#FFFFFF"
+  header_text: "Research Intelligence Platform"  # Replace with your header
+
+peers:
+  mode: "dynamic"  # Allows users to select peers interactively
+  max_selections: 10  # Maximum number of peer institutions to select
+  texas: []  # Leave empty for dynamic mode
+  national: []  # Leave empty for dynamic mode
+
+targets:
+  default_amount_millions: 250
+  default_target_year: 2030
+
+analysis:
+  data_start_year: 2010
+  data_end_year: 2024
+  default_period: "5-year"  # Options: "5-year", "10-year", "custom"
+
+report:
+  title_template: "{short_name} Research: Path to ${target}M"
+  subtitle_template: "Strategic Briefing | {period} Analysis"
+
+auth:
+  default_password: "demo2026"  # Change this for production
