@@ -94,12 +94,45 @@ GOOGLE_SHEETS_CREDS = '{"type": "service_account", ...}'
 - "Show [institution]'s institutional funding from 2020 to 2024"
 - "Break down [institution]'s funding sources for 2024"
 
+## Data Pipeline
+
+The database is built from raw NSF survey data through a three-step process. You don't need to run this unless you want to update the data with the latest NSF release.
+
+### How It Works
+
+**Step 1: Download** - Grabs the ZIP files from the NSF website  
+**Step 2: Transform** - Converts the data into a format that's easy to query  
+**Step 3: Load** - Creates the database file
+
+```bash
+python scripts/etl/1_download.py
+python scripts/etl/2_transform.py
+python scripts/etl/3_load.py
+```
+
+The transform step is smart - if NSF adds new funding categories or changes their format, the code adapts automatically. No manual updates needed.
+
+### Updating the Data
+
+NSF releases new data every October. When that happens:
+
+1. Run the three scripts above
+2. The new data gets added automatically
+3. Push the updated database to GitHub
+
+That's it. The existing AI assistant will work with the updated data without any code changes.
+
 ## Architecture
 
 ```
 ├── app.py                    # Streamlit web interface
 ├── src/
 │   └── query_engine.py       # AI query engine (SQL generation, execution, summarization)
+├── scripts/
+│   └── etl/                  # Data pipeline scripts
+│       ├── 1_download.py     # Download NSF data
+│       ├── 2_transform.py    # Transform to analysis format
+│       └── 3_load.py         # Load into database
 ├── data/
 │   └── herd.db               # SQLite database
 ├── requirements.txt          # Pinned dependencies
