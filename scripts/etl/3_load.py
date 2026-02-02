@@ -156,6 +156,12 @@ class HERDLoader:
             print(f"  Institutional: ${unt['institutional'][0]:,}")
         else:
             print("  ⚠️ UNT data not found")
+            
+        # Compact the database (BEFORE closing)
+        print()
+        print("   Compacting database...")
+        conn.execute("VACUUM")
+        print("   ✓ Database compacted")
         
         conn.close()
         
