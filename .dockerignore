@@ -2,8 +2,8 @@
 .gitignore
 .ipynb_checkpoints
 __pycache__
-*.pyc
 .env
+*.pyc
 secrets/
 github-recovery-codes.txt
 usage_log.txt
