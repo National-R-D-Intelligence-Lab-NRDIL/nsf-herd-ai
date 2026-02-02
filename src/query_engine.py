@@ -16,14 +16,15 @@ import yaml
 class HERDQueryEngine:
     """AI-powered query engine for NSF HERD data"""
 
-    def __init__(self, api_key, db_path):
+    def __init__(self, api_key, db_path, config):  # ← Add config parameter
         self.client = genai.Client(api_key=api_key)
         self.db_path = db_path
         
-        # Load config
-        config_file = os.getenv('CONFIG_FILE', 'configs/template.yml')
-        with open(config_file, 'r') as f:
-            self.config = yaml.safe_load(f) 
+        # Use passed config instead of loading from file
+        self.config = config
+        
+        # Build peer ID strings from config
+        inst_id = self.config['institution']['inst_id']
         
         # Build peer ID strings from config
         inst_id = self.config['institution']['inst_id']

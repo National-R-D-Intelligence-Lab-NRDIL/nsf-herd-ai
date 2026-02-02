@@ -151,7 +151,7 @@ if not api_key:
     st.stop()
 
 # Initialize query engine
-engine = HERDQueryEngine(api_key, db_path)
+engine = HERDQueryEngine(api_key, db_path, config)
 
 # Initialize session state
 if 'history' not in st.session_state:
