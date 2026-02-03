@@ -2,6 +2,9 @@
 NSF HERD Query Engine
 Converts natural language questions into SQL queries against the HERD database,
 executes them, and synthesizes the results into readable summaries.
+
+Also provides the two direct queries the Snapshot feature needs:
+rank trend over time, and the anchor view for a given institution.
 """
 
 from google import genai
@@ -65,14 +68,128 @@ ORDER BY total_rd DESC
 LIMIT 10;
 """
 
+# Candidate anchor positions for the snapshot view.
+# In the real DB (1,004 institutions) most of these will exist.
+# The dynamic selection logic in get_anchor_view() filters out
+# any that don't exist or are too close to the target.
+ANCHOR_CANDIDATES = [1, 10, 25, 50, 100, 250, 500, 750]
+
 
 class HERDQueryEngine:
-    """Handles the full pipeline: question → SQL → results → summary"""
+    """Handles the full pipeline: question -> SQL -> results -> summary"""
 
     def __init__(self, api_key, db_path):
         self.client = genai.Client(api_key=api_key)
         self.db_path = db_path
 
+    # ----------------------------------------------------------
+    # Direct DB access — used by snapshot and institution list.
+    # Keeps the connection lifecycle tight: open, run, close.
+    # ----------------------------------------------------------
+    def _query(self, sql, params=None):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql(sql, conn, params=params)
+        conn.close()
+        return df
+
+    # ----------------------------------------------------------
+    # Institution list for the snapshot dropdown.
+    # Pulls distinct names once — caller should cache this.
+    # ----------------------------------------------------------
+    def get_institution_list(self):
+        # Get the most recent name for each inst_id to handle name changes over time
+        # (e.g., "University of North Texas" became "University of North Texas, Denton" in 2011)
+        return self._query("""
+            WITH recent_names AS (
+                SELECT DISTINCT inst_id, name
+                FROM institutions
+                WHERE year = (SELECT MAX(year) FROM institutions WHERE institutions.inst_id = inst_id)
+            ),
+            valid_institutions AS (
+                SELECT inst_id
+                FROM institutions
+                WHERE year BETWEEN 2019 AND 2024
+                GROUP BY inst_id
+                HAVING COUNT(DISTINCT year) >= 5 
+                   AND SUM(total_rd) > 0
+            )
+            SELECT rn.name
+            FROM recent_names rn
+            INNER JOIN valid_institutions vi ON rn.inst_id = vi.inst_id
+            ORDER BY rn.name;
+        """)['name'].tolist()
+
+    # ----------------------------------------------------------
+    # Snapshot: rank trend
+    # Returns the institution's national rank for each year in
+    # the selected window. RANK() is partitioned by year so each
+    # year's ranking is independent.
+    # ----------------------------------------------------------
+    def get_rank_trend(self, institution_name, start_year=2019, end_year=2024):
+        sql = """
+        WITH ranked AS (
+            SELECT
+                name,
+                year,
+                total_rd,
+                RANK() OVER (PARTITION BY year ORDER BY total_rd DESC) as national_rank
+            FROM institutions
+        )
+        SELECT year, national_rank, total_rd
+        FROM ranked
+        WHERE name = ? AND year BETWEEN ? AND ?
+        ORDER BY year;
+        """
+        return self._query(sql, params=(institution_name, start_year, end_year))
+
+    # ----------------------------------------------------------
+    # Snapshot: anchor view
+    # Two-step process:
+    #   1. Rank all institutions for the latest year in one pass
+    #   2. Pick anchors dynamically based on where the target landed
+    # Returns the target + surrounding benchmarks, sorted by rank.
+    # ----------------------------------------------------------
+    def get_anchor_view(self, institution_name, year=2024):
+        # Step 1: full ranking for that year
+        df_ranked = self._query("""
+            SELECT name, total_rd,
+                   RANK() OVER (ORDER BY total_rd DESC) as national_rank
+            FROM institutions
+            WHERE year = ?
+            ORDER BY national_rank;
+        """, params=(year,))
+
+        total_institutions = len(df_ranked)
+
+        # Find the target row — if missing, return empty
+        target_rows = df_ranked[df_ranked['name'] == institution_name]
+        if target_rows.empty:
+            return pd.DataFrame(), 0, total_institutions
+
+        target_rank = int(target_rows['national_rank'].values[0])
+
+        # Step 2: pick anchors that are meaningfully spaced around the target.
+        # Skip any candidate that's within 2 positions of the target — too close to be useful.
+        anchors_above = [r for r in ANCHOR_CANDIDATES if r < target_rank and (target_rank - r) > 2]
+        anchors_below = [r for r in ANCHOR_CANDIDATES if r > target_rank and (r - target_rank) > 2]
+
+        selected = set()
+        selected.add(1)                          # #1 is always shown
+        selected.add(total_institutions)          # last place is always shown
+        selected.update(anchors_above[-2:])       # 2 closest benchmarks above
+        selected.update(anchors_below[:2])        # 2 closest benchmarks below
+        selected.add(target_rank)                 # the target itself
+
+        # Filter and tag
+        anchor_df = df_ranked[df_ranked['national_rank'].isin(selected)].copy()
+        anchor_df['is_target'] = anchor_df['name'] == institution_name
+        anchor_df = anchor_df.sort_values('national_rank').reset_index(drop=True)
+
+        return anchor_df, target_rank, total_institutions
+
+    # ----------------------------------------------------------
+    # AI-powered query pipeline (the original free-form Q&A path)
+    # ----------------------------------------------------------
     def _clean_sql(self, text):
         """
         Pulls the actual SQL out of whatever the model returns.
@@ -144,7 +261,7 @@ Rules:
 
     def ask(self, question):
         """
-        Main entry point. Takes a plain English question,
+        Main entry point for free-form questions. Takes plain English,
         runs it through the full pipeline, returns everything the UI needs.
         """
         sql = self.generate_sql(question)
