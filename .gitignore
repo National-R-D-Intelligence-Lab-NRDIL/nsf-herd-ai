@@ -4,7 +4,6 @@
 __pycache__/
 .ipynb_checkpoints/
 *.db-journal
-secret/
 secrets/
 data/raw/
 data/transformed/
