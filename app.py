@@ -55,7 +55,6 @@ if not st.session_state.username:
     
     st.title("🔐 Access Required")
     st.markdown("This tool is currently in a pilot program with select institutions.")
-    st.markdown("**Contact:** kalyan@example.com for access")  # Replace with your email
     
     col1, col2 = st.columns(2)
     with col1:
