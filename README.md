@@ -1,35 +1,37 @@
-# NSF HERD AI Assistant
+# NSF HERD Research Intelligence
 
-AI-powered research analytics platform for querying 15 years of university R&D funding data using natural language.
+Analytics platform for university R&D funding data.
 
 ## Overview
 
-This tool enables university administrators to analyze NSF HERD (Higher Education Research & Development) survey data through natural language queries. Built for strategic decision-making at research institutions.
+Analyze NSF HERD (Higher Education Research & Development) survey data through natural language queries and interactive snapshots.
 
-**Dataset:**
-- 10,084 records covering 1,004 institutions
-- 15 years of data (2010-2024)
-- $1+ trillion in R&D funding analyzed
+**Dataset:** 10,084 records covering 1,004 institutions from 2010-2024
 
 ## Features
 
-- **Natural Language Queries** — Ask questions in plain English
-- **AI-Powered SQL Generation** — Gemini converts questions to optimized SQL
-- **Growth Rate Analysis** — Calculate and compare R&D growth across institutions and time periods
-- **Peer Benchmarking** — Pre-configured peer institution lists for competitive analysis
-- **Smart Name Matching** — Handles variations like "UT Austin", "Ohio State", "MIT"
-- **Auto-Generated Visualizations** — Context-aware charts (line/bar) based on query results
-- **AI Summaries** — One-line insights with anti-hallucination guardrails
-- **Persistent Usage Logging** — Google Sheets integration for query tracking
-- **Access Control** — Password-protected with username capture
-- **Export** — Download results as CSV
+### Institution Snapshot
+- **National ranking trends** - See how institutions move up/down over 5 or 10 years
+- **Anchor positioning** - Compare against benchmark institutions (#1, #10, #50, etc.)
+- **Funding metrics** - Current rank, total R&D, year-over-year movement
+
+### Natural Language Queries
+- **AI-powered SQL generation** - Gemini converts questions to optimized queries
+- **Smart name matching** - Handles "MIT", "Ohio State", "UT Austin" variations
+- **Auto-generated visualizations** - Context-aware charts based on results
+- **AI summaries** - One-line insights with anti-hallucination guardrails
+
+### Access Control
+- Username + password authentication
+- Approved user list for pilot programs
+- Usage logging to Google Sheets
 
 ## Quick Start
 
 ### Prerequisites
 - Python 3.11+
 - Google Gemini API key
-- Google Cloud service account (for logging)
+- Google Cloud service account (optional, for logging)
 
 ### Installation
 
@@ -41,7 +43,9 @@ cd nsf-herd-ai
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure environment variables (see Configuration section)
+# Configure environment variables
+cp .env.example .env
+# Edit .env with your values
 
 # Run application
 streamlit run app.py
@@ -57,6 +61,7 @@ Create a `.env` file in the project root:
 GEMINI_API_KEY=your_gemini_api_key
 DATABASE_PATH=data/herd.db
 PASSWORD=your_app_password
+APPROVED_USERS=user1,user2,user3
 GOOGLE_SHEET_ID=your_google_sheet_id
 GOOGLE_SHEETS_CREDS={"type": "service_account", ...}
 ```
@@ -69,30 +74,24 @@ Add secrets in Streamlit Cloud dashboard under Settings → Secrets:
 GEMINI_API_KEY = "your_gemini_api_key"
 DATABASE_PATH = "data/herd.db"
 PASSWORD = "your_app_password"
+APPROVED_USERS = "user1,user2,user3"
 GOOGLE_SHEET_ID = "your_google_sheet_id"
 GOOGLE_SHEETS_CREDS = '{"type": "service_account", ...}'
 ```
 
-## Example Queries
+## Example Use Cases
 
-### Growth Analysis
-- "Show R&D growth from 2020 to 2024 for [institution]"
-- "Which universities had the highest R&D growth from 2020 to 2024?"
-- "What is the growth rate for [institution] over the last 5 years?"
+### Institution Snapshot
+- Track UNT's national ranking movement from #198 (2019) → #174 (2024)
+- Compare position against peer institutions (#1, #100, #250)
+- Identify funding source breakdowns
 
-### Peer Benchmarking
-- "How does [institution] compare to its peers in 2024?"
-- "Compare [institution] to peer institutions for 2024"
-
-### Competitive Intelligence
-- "Compare [institution A], [institution B], and [institution C] for 2024"
-- "Show top 10 universities by R&D in [state] for 2024"
-- "What is [institution]'s total R&D for 2024?"
-
-### Funding Analysis
-- "What percentage of [institution]'s 2024 funding is federal?"
-- "Show [institution]'s institutional funding from 2020 to 2024"
-- "Break down [institution]'s funding sources for 2024"
+### Natural Language Queries
+- "Which universities had the fastest R&D growth over the last 5 years?"
+- "What percentage of Ohio State's 2024 funding is federal?"
+- "Show top 10 universities in Texas by R&D for 2024"
+- "Compare MIT, Stanford, and Caltech from 2020 to 2024"
+- "How has UCLA's federal funding changed from 2015 to 2024?"
 
 ## Data Pipeline
 
@@ -112,6 +111,8 @@ python scripts/etl/3_load.py
 
 The transform step is smart - if NSF adds new funding categories or changes their format, the code adapts automatically. No manual updates needed.
 
+**Name cleaning:** The transform step standardizes institution names by moving trailing ", The" to the front (e.g., "University of Alabama, The" → "The University of Alabama").
+
 ### Updating the Data
 
 NSF releases new data every October. When that happens:
@@ -120,18 +121,18 @@ NSF releases new data every October. When that happens:
 2. The new data gets added automatically
 3. Push the updated database to GitHub
 
-That's it. The existing AI assistant will work with the updated data without any code changes.
+That's it. The existing application will work with the updated data without any code changes.
 
 ## Architecture
 
 ```
-├── app.py                    # Streamlit web interface
+├── app.py                    # Main UI (snapshot + Q&A tabs, auth, visualization)
 ├── src/
-│   └── query_engine.py       # AI query engine (SQL generation, execution, summarization)
+│   └── query_engine.py       # AI query engine + snapshot data methods
 ├── scripts/
 │   └── etl/                  # Data pipeline scripts
 │       ├── 1_download.py     # Download NSF data
-│       ├── 2_transform.py    # Transform to analysis format
+│       ├── 2_transform.py    # Transform + name cleaning
 │       └── 3_load.py         # Load into database
 ├── data/
 │   └── herd.db               # SQLite database
@@ -147,7 +148,7 @@ That's it. The existing AI assistant will work with the updated data without any
 | Column | Type | Description |
 |--------|------|-------------|
 | inst_id | TEXT | Institution identifier (e.g., '003594') |
-| name | TEXT | Full institution name |
+| name | TEXT | Full institution name (cleaned) |
 | city | TEXT | City location |
 | state | TEXT | State code (e.g., 'TX') |
 | year | INTEGER | Fiscal year (2010-2024) |
@@ -163,7 +164,7 @@ That's it. The existing AI assistant will work with the updated data without any
 
 - API keys stored in environment variables / Streamlit secrets
 - `.gitignore` configured to exclude sensitive files
-- Password-protected application access
+- Password + approved user list for access control
 - Usage logging with usernames for audit trail
 - Pinned dependencies to prevent supply chain issues
 
@@ -185,8 +186,9 @@ Logs persist across application restarts and deployments.
 | AI Model | Google Gemini 2.5 Flash |
 | Database | SQLite |
 | Visualization | Plotly |
+| Auth | Session-based |
 | Logging | Google Sheets API |
-| Deployment | Streamlit Cloud |
+| Deployment | Streamlit Cloud / Railway |
 
 ## Monitoring
 Uptime monitoring via UptimeRobot - pings every 5 minutes to prevent Streamlit Cloud sleep.
@@ -200,6 +202,13 @@ National Science Foundation (NSF) Higher Education Research & Development (HERD)
 - Covers all U.S. research institutions receiving federal funding
 
 ## Changelog
+
+### v2.0.0 (February 2026)
+- Added Institution Snapshot feature with ranking trends and anchor positioning
+- Implemented authentication with approved user list
+- Added institution name standardization in ETL pipeline
+- Updated UI to tabbed interface (Snapshot + Q&A)
+- Improved query engine with dedicated snapshot data methods
 
 ### v1.1.0 (January 2026)
 - Added growth rate calculation support
