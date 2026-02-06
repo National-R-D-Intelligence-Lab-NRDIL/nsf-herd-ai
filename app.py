@@ -16,7 +16,9 @@ warnings.filterwarnings('ignore')
 # Railway and Streamlit Cloud both expose secrets as env vars.
 # Locally, we fall back to .env file via dotenv.
 # ============================================================
-load_dotenv()
+# Force load .env from the app directory
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 def get_env(key, default=None):
     """Single place to pull secrets — env vars first, then .env fallback."""
@@ -24,35 +26,70 @@ def get_env(key, default=None):
 
 GEMINI_API_KEY = get_env('GEMINI_API_KEY')
 DATABASE_PATH  = get_env('DATABASE_PATH', 'data/herd.db')
-PASSWORD       = get_env('PASSWORD', 'demo2026')
+PASSWORD = get_env('PASSWORD')
+APPROVED_USERS_STR = get_env('APPROVED_USERS', '')
 GOOGLE_SHEET_ID    = get_env('GOOGLE_SHEET_ID')
 GOOGLE_SHEETS_CREDS = get_env('GOOGLE_SHEETS_CREDS')
+
+# Parse approved users list
+APPROVED_USERS = [u.strip() for u in APPROVED_USERS_STR.split(',') if u.strip()]
 
 if not GEMINI_API_KEY:
     st.error("GEMINI_API_KEY is not set. Add it to your environment variables.")
     st.stop()
 
-# ============================================================
-# Authentication
-# ============================================================
-def check_login():
-    if st.session_state.get('logged_in'):
-        return
+# PASSWORD is checked later during authentication, not here
 
-    st.title("🔐 Login Required")
-    username = st.text_input("Username", placeholder="Enter your name")
-    password = st.text_input("Password", type="password")
+# ============================================================
+# Authentication - username + password with approved list
+# ============================================================
+if 'username' not in st.session_state:
+    st.session_state.username = None
 
-    if st.button("Login"):
-        if username and password == PASSWORD:
-            st.session_state.logged_in = True
-            st.session_state.username = username
+if not st.session_state.username:
+    # Check PASSWORD here, where it's actually needed
+    if not PASSWORD:
+        st.error("⚠️ PASSWORD environment variable is not set.")
+        st.info("Add `PASSWORD=your_password` to your `.env` file or environment variables.")
+        st.stop()
+    
+    st.title("🔐 Access Required")
+    st.markdown("This tool is currently in a pilot program with select institutions.")
+    st.markdown("**Contact:** kalyan@example.com for access")  # Replace with your email
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        username = st.text_input("Username", placeholder="Your assigned username")
+    with col2:
+        password = st.text_input("Password", type="password", placeholder="Provided password")
+    
+    if st.button("Login", type="primary"):
+        if not username or not password:
+            st.error("Please enter both username and password")
+        elif password != PASSWORD:
+            st.error("Invalid password")
+        elif not APPROVED_USERS:
+            # No approved list means open access (for your own testing)
+            st.session_state.username = username.strip()
             st.rerun()
+        elif username.strip() not in APPROVED_USERS:
+            st.error(f"Username '{username}' is not authorized for this pilot program.")
+            st.info("If you're interested in participating, please contact the administrator.")
         else:
-            st.error("Invalid credentials")
+            st.session_state.username = username.strip()
+            st.success(f"✅ Welcome, {username}!")
+            st.rerun()
+    
+    with st.expander("ℹ️ About This Tool"):
+        st.markdown("""
+        This AI-powered research intelligence platform helps universities explore R&D funding data 
+        across 1,004 institutions from 2010-2024 using NSF HERD Survey data.
+        
+        **Currently in pilot:** We're working with select institutions to gather feedback and 
+        measure impact before wider release.
+        """)
+    
     st.stop()
-
-check_login()
 
 # ============================================================
 # Google Sheets logging — fires and forgets.
@@ -102,8 +139,6 @@ engine = HERDQueryEngine(GEMINI_API_KEY, DATABASE_PATH)
 # ============================================================
 if 'history' not in st.session_state:
     st.session_state.history = []
-if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = 'snapshot'
 
 # Cache the institution list — it's a full table scan, no point
 # running it on every rerender.
@@ -243,10 +278,9 @@ def render_snapshot_tab():
     with col_pick:
         selected_institution = st.selectbox(
             "Pick an institution",
-            options=[""] + institution_list,  # Add empty placeholder at start
-            index=0,  # Default to empty placeholder
-            placeholder="Select an institution...",
-            format_func=lambda x: "Select an institution..." if x == "" else x
+            options=institution_list,
+            index=None,
+            placeholder="Choose an institution..."
         )
     with col_window:
         time_window = st.selectbox(
@@ -255,13 +289,13 @@ def render_snapshot_tab():
             index=0
         )
 
-    # If no institution selected, show message and return
-    if not selected_institution or selected_institution == "":
-        st.info("👆 Select an institution above to view their R&D funding snapshot")
-        return
-
     start_year = 2019 if "5-Year" in time_window else 2014
     end_year   = 2024
+
+    # Don't proceed if no institution selected yet
+    if not selected_institution:
+        st.info("👆 Pick an institution above to see their ranking snapshot")
+        return
 
     # Pull data
     rank_df = engine.get_rank_trend(selected_institution, start_year, end_year)
@@ -352,7 +386,7 @@ def create_visualization(df, question):
 # ============================================================
 # Free-form Q&A tab: the original chat interface
 # ============================================================
-def render_qa_tab():
+def render_qa_tab(question):
     # Example questions
     with st.expander("Example Questions"):
         st.markdown("""
@@ -366,16 +400,14 @@ def render_qa_tab():
         - Which states have the highest total R&D across all institutions?
         """)
 
-    # Sidebar viz controls - store in session state so it's accessible outside this function
+    # Sidebar viz controls
     with st.sidebar:
         st.header("Visualization")
-        st.session_state.enable_viz = st.checkbox("Auto-generate charts", value=True)
+        enable_viz = st.checkbox("Auto-generate charts", value=True)
 
         if st.button("Clear History"):
             st.session_state.history = []
             st.rerun()
-
-    enable_viz = st.session_state.enable_viz
 
     # Render previous exchanges
     for item in st.session_state.history:
@@ -405,88 +437,74 @@ def render_qa_tab():
                     key=f"download_{hash(item['question'])}"
                 )
 
-# ============================================================
-# Process a new question (extracted from render_qa_tab)
-# ============================================================
-def process_question(question, enable_viz=True):
-    """Process a new Q&A question and add to history"""
-    with st.chat_message("user"):
-        st.write(question)
+    # Handle new question (passed in from outside the tab)
+    if question:
+        with st.chat_message("user"):
+            st.write(question)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                sql, results, summary = engine.ask(question)
-                log_to_sheets(st.session_state.username, question, sql)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    sql, results, summary = engine.ask(question)
+                    log_to_sheets(st.session_state.username, question, sql)
 
-                with st.expander("Generated SQL"):
-                    st.code(sql, language="sql")
+                    with st.expander("Generated SQL"):
+                        st.code(sql, language="sql")
 
-                if results is not None and len(results) > 0:
-                    st.dataframe(results, use_container_width=True)
-                    st.success("Query executed successfully")
-                else:
-                    st.warning("Query returned no results. Try rephrasing.")
+                    if results is not None and len(results) > 0:
+                        st.dataframe(results, use_container_width=True)
+                        st.success("Query executed successfully")
+                    else:
+                        st.warning("Query returned no results. Try rephrasing.")
 
-                if summary:
-                    st.info(f"📊 {summary}")
+                    if summary:
+                        st.info(f"📊 {summary}")
 
-                if enable_viz and results is not None and len(results) > 0:
-                    chart = create_visualization(results, question)
-                    if chart:
-                        st.plotly_chart(chart, use_container_width=True)
+                    if enable_viz and results is not None and len(results) > 0:
+                        chart = create_visualization(results, question)
+                        if chart:
+                            st.plotly_chart(chart, use_container_width=True)
 
-                # Keep last 20 exchanges in memory
-                st.session_state.history.append({
-                    'question': question,
-                    'sql': sql,
-                    'results': results,
-                    'summary': summary
-                })
-                if len(st.session_state.history) > 20:
-                    st.session_state.history = st.session_state.history[-20:]
+                    # Keep last 20 exchanges in memory
+                    st.session_state.history.append({
+                        'question': question,
+                        'sql': sql,
+                        'results': results,
+                        'summary': summary
+                    })
+                    if len(st.session_state.history) > 20:
+                        st.session_state.history = st.session_state.history[-20:]
 
-                if results is not None and len(results) > 0:
-                    csv_data = results.to_csv(index=False)
-                    st.download_button(
-                        "Download CSV", csv_data,
-                        f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        "text/csv"
-                    )
+                    if results is not None and len(results) > 0:
+                        csv_data = results.to_csv(index=False)
+                        st.download_button(
+                            "Download CSV", csv_data,
+                            f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            "text/csv"
+                        )
 
-            except Exception as e:
-                st.error(f"Something went wrong: {str(e)}")
-                st.session_state.history.append({
-                    'question': question,
-                    'sql': 'Error generating SQL',
-                    'results': None,
-                    'summary': f"Error: {str(e)}"
-                })
+                except Exception as e:
+                    st.error(f"Something went wrong: {str(e)}")
+                    st.session_state.history.append({
+                        'question': question,
+                        'sql': 'Error generating SQL',
+                        'results': None,
+                        'summary': f"Error: {str(e)}"
+                    })
 
 # ============================================================
-# Main layout: two tabs at the top, content below
+# Main layout: greeting + chat input + tabs
 # ============================================================
 st.title("NSF HERD Research Intelligence")
-st.markdown("Explore university R&D funding across 1,004 institutions (2010–2024)")
+st.markdown(f"👋 Hello, **{st.session_state.username}** | Explore university R&D funding across 1,004 institutions (2010–2024)")
 
-# Create tabs - we'll use the selection to determine which tab is active
+# Chat input must be outside tabs due to Streamlit limitation
+question = st.chat_input("Ask a question about university R&D funding...")
+
 snapshot_tab, qa_tab = st.tabs(["📊 Institution Snapshot", "💬 Ask a Question"])
 
 with snapshot_tab:
-    st.session_state.active_tab = 'snapshot'
     render_snapshot_tab()
 
 with qa_tab:
-    st.session_state.active_tab = 'qa'
-    render_qa_tab()
-
-# ============================================================
-# Chat input - OUTSIDE tabs, only shown when Q&A tab is active
-# ============================================================
-if st.session_state.active_tab == 'qa':
-    # Get viz preference from sidebar if it exists, otherwise default to True
-    enable_viz = st.session_state.get('enable_viz', True)
-    
-    question = st.chat_input("Ask a question about university R&D funding...")
-    if question:
-        process_question(question, enable_viz)
+    render_qa_tab(question)

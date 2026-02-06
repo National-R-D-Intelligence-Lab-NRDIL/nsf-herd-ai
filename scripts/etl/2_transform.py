@@ -42,6 +42,36 @@ class HERDTransformer:
         
         return replacements.get(clean, clean)
     
+    def _clean_institution_names(self, df):
+        """
+        Standardize institution names by moving trailing ', The' to the front.
+        
+        NSF inconsistently appends ', The' to some institution names.
+        We standardize by moving it to the front for visual consistency.
+        
+        Examples:
+            "University of Alabama, The" -> "The University of Alabama"
+            "Ohio State University, The" -> "The Ohio State University"
+            "University of Texas at Austin" -> unchanged (no trailing ', The')
+        
+        Args:
+            df: DataFrame with 'name' column
+            
+        Returns:
+            DataFrame with cleaned 'name' column
+        """
+        def clean_name(name):
+            if pd.isna(name):
+                return name
+            # If name ends with ", The" (case-insensitive), move it to front
+            if re.search(r',\s*The\s*$', name, re.IGNORECASE):
+                clean = re.sub(r',\s*The\s*$', '', name, flags=re.IGNORECASE).strip()
+                return f"The {clean}"
+            return name
+        
+        df['name'] = df['name'].apply(clean_name)
+        return df
+    
     def discover_and_transform_year(self, year):
         """Discover Q1 structure and transform one year"""
         csv_files = list(self.raw_dir.glob(f"*{year}*.csv"))
@@ -123,6 +153,9 @@ class HERDTransformer:
             
             # Create DataFrame
             df_transformed = pd.DataFrame(transformed_rows)
+            
+            # Clean institution names (move trailing ", The" to front)
+            df_transformed = self._clean_institution_names(df_transformed)
             
             # Save
             self.output_dir.mkdir(parents=True, exist_ok=True)
