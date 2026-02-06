@@ -24,7 +24,7 @@ def get_env(key, default=None):
 
 GEMINI_API_KEY = get_env('GEMINI_API_KEY')
 DATABASE_PATH  = get_env('DATABASE_PATH', 'data/herd.db')
-PASSWORD       = get_env('PASSWORD', 'demo2026')
+PASSWORD       = get_env('PASSWORD', 'unt2026')
 GOOGLE_SHEET_ID    = get_env('GOOGLE_SHEET_ID')
 GOOGLE_SHEETS_CREDS = get_env('GOOGLE_SHEETS_CREDS')
 
@@ -94,8 +94,21 @@ def log_to_sheets(username, question, sql):
 # ============================================================
 sys.path.append(str(Path(__file__).parent / 'src'))
 from query_engine import HERDQueryEngine
+from benchmarker import fetch_university_features, AutoBenchmarker
 
 engine = HERDQueryEngine(GEMINI_API_KEY, DATABASE_PATH)
+
+# ============================================================
+# Benchmarker setup — cached so the KNN model is fitted once.
+# ============================================================
+@st.cache_resource(show_spinner="Loading benchmarking model...")
+def load_benchmarker():
+    df = fetch_university_features(DATABASE_PATH)
+    bench = AutoBenchmarker(n_peers=10)
+    bench.fit(df)
+    return bench
+
+benchmarker = load_benchmarker()
 
 # ============================================================
 # Session state
@@ -120,6 +133,222 @@ def fmt_dollars(n):
     if n >= 1e6:
         return f"${n / 1e6:.1f}M"
     return f"${n:,.0f}"
+
+# ============================================================
+# Executive Summary tab
+# National peer gap + state context in one view.
+# ============================================================
+METRIC_LABELS = {
+    "total_rd":       "Total R&D",
+    "federal":        "Federal",
+    "state_local":    "State & Local",
+    "business":       "Business",
+    "nonprofit":      "Nonprofit",
+    "institutional":  "Institutional",
+    "other_sources":  "Other Sources",
+}
+
+def render_executive_summary_tab():
+    institution_list = load_institution_list()
+
+    selected = st.selectbox(
+        "Select your institution",
+        options=[""] + institution_list,
+        index=0,
+        placeholder="Select an institution...",
+        format_func=lambda x: "Select an institution..." if x == "" else x,
+        key="exec_summary_institution_picker",
+    )
+
+    if not selected or selected == "":
+        st.info("Select an institution above to generate an executive summary.")
+        return
+
+    # --- Map name → inst_id via the benchmarker's fitted data ---
+    match = benchmarker.data[benchmarker.data["name"] == selected]
+    if match.empty:
+        st.warning(f"'{selected}' was not found in the benchmarking dataset.")
+        return
+    inst_id = match["inst_id"].values[0]
+
+    # --- Pull all three analyses ---
+    try:
+        gap_data    = benchmarker.analyze_gap(inst_id)
+        state_ctx   = benchmarker.analyze_state_context(inst_id)
+        peer_names  = benchmarker.get_peers(inst_id)
+    except Exception as e:
+        st.error(f"Benchmarking error: {e}")
+        return
+
+    target_rd    = next(g for g in gap_data if g["metric"] == "total_rd")
+    target_total = target_rd["my_val"]
+    peer_avg     = target_rd["peer_avg"]
+
+    # ==============================================================
+    # Row 1 — headline metrics
+    # ==============================================================
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric(
+            "Total R&D",
+            fmt_dollars(target_total),
+            help="Your institution's total R&D expenditures",
+        )
+    with c2:
+        delta = target_total - peer_avg
+        st.metric(
+            "vs Peer Average",
+            fmt_dollars(peer_avg),
+            delta=f"{'+' if delta >= 0 else ''}{fmt_dollars(abs(delta))}",
+            delta_color="normal" if delta >= 0 else "inverse",
+            help="Average total R&D of your 10 closest national peers",
+        )
+    with c3:
+        st.metric(
+            "State Rank",
+            f"#{state_ctx['state_rank']} of {state_ctx['total_in_state']}",
+            help=f"Rank by total R&D among all institutions in {state_ctx['state']}",
+        )
+    with c4:
+        st.metric(
+            "State Funding Share",
+            f"{state_ctx['state_funding_share']:.1f}%",
+            help="Your share of all state & local government R&D funding in your state",
+        )
+
+    st.divider()
+
+    # ==============================================================
+    # Row 2 — two-column deep dive
+    # ==============================================================
+    left, right = st.columns([3, 2])
+
+    # --- LEFT: National Peer Gap Chart ---
+    with left:
+        st.subheader("National Peer Comparison")
+        st.caption(f"Your funding profile vs. the average of your {len(peer_names)} closest peers")
+
+        labels   = [METRIC_LABELS.get(g["metric"], g["metric"]) for g in gap_data]
+        my_vals  = [g["my_val"] for g in gap_data]
+        avg_vals = [g["peer_avg"] for g in gap_data]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            y=labels, x=my_vals, orientation="h",
+            name=selected.split(",")[0],  # short name
+            marker_color="#2563EB",
+            text=[fmt_dollars(v) for v in my_vals],
+            textposition="outside",
+            textfont=dict(size=11),
+        ))
+        fig.add_trace(go.Bar(
+            y=labels, x=avg_vals, orientation="h",
+            name="Peer Average",
+            marker_color="#D1D5DB",
+            text=[fmt_dollars(v) for v in avg_vals],
+            textposition="outside",
+            textfont=dict(size=11),
+        ))
+        fig.update_layout(
+            barmode="group",
+            height=340,
+            margin=dict(l=10, r=80, t=10, b=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            xaxis=dict(title=None, showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
+            yaxis=dict(title=None, autorange="reversed"),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Gap table in an expander
+        with st.expander("Detailed gap numbers"):
+            gap_df = []
+            for g in gap_data:
+                label = METRIC_LABELS.get(g["metric"], g["metric"])
+                gap_val = g["gap"]
+                gap_df.append({
+                    "Metric": label,
+                    "You": fmt_dollars(g["my_val"]),
+                    "Peer Avg": fmt_dollars(g["peer_avg"]),
+                    "Gap": f"{'+'if gap_val>=0 else ''}{fmt_dollars(abs(gap_val))}",
+                })
+            st.dataframe(gap_df, use_container_width=True, hide_index=True)
+
+    # --- RIGHT: State Context ---
+    with right:
+        st.subheader(f"State Context — {state_ctx['state']}")
+
+        # Top competitor callout
+        if state_ctx["top_competitor"]:
+            st.markdown(
+                f"**#1 in {state_ctx['state']}:** {state_ctx['top_competitor']}"
+            )
+        else:
+            st.success(f"You are #1 in {state_ctx['state']}")
+
+        # State rank position visual — horizontal bar showing where
+        # the institution sits among all in-state schools.
+        state_df = (
+            benchmarker.data[benchmarker.data["state"] == state_ctx["state"]]
+            .sort_values("total_rd", ascending=False)
+            .head(15)  # top 15 keeps the chart readable
+        )
+
+        is_target = state_df["inst_id"] == inst_id
+        colors = ["#2563EB" if t else "#93C5FD" for t in is_target]
+
+        # Truncate long names
+        display_names = []
+        for n, t in zip(state_df["name"], is_target):
+            label = n if len(n) < 35 else n[:32] + "…"
+            if t:
+                label = f"► {label}"
+            display_names.append(label)
+
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=state_df["total_rd"].tolist(),
+            y=display_names,
+            orientation="h",
+            marker_color=colors,
+            text=[fmt_dollars(v) for v in state_df["total_rd"]],
+            textposition="outside",
+            textfont=dict(size=11, color="#374151"),
+            hovertemplate="%{y}<br>%{text}<extra></extra>",
+        ))
+        fig2.update_layout(
+            height=max(200, len(state_df) * 36),
+            margin=dict(l=220, r=70, t=10, b=30),
+            xaxis=dict(title="Total R&D", showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
+            yaxis=dict(title=None, categoryorder="array", categoryarray=display_names),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+        if state_ctx["total_in_state"] > 15:
+            st.caption(
+                f"Showing top 15 of {state_ctx['total_in_state']} institutions in {state_ctx['state']}"
+            )
+
+    st.divider()
+
+    # ==============================================================
+    # Row 3 — Peer list
+    # ==============================================================
+    with st.expander(f"Your {len(peer_names)} National Peers (by funding similarity)"):
+        # Display as a numbered list with each peer's total R&D for context
+        peer_rows = []
+        for name in peer_names:
+            row = benchmarker.data[benchmarker.data["name"] == name]
+            if not row.empty:
+                peer_rows.append({
+                    "Institution": name,
+                    "State": row["state"].values[0],
+                    "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                })
+        st.dataframe(peer_rows, use_container_width=True, hide_index=True)
 
 # ============================================================
 # Snapshot: rank trend visualization
@@ -470,7 +699,15 @@ st.title("NSF HERD Research Intelligence")
 st.markdown("Explore university R&D funding across 1,004 institutions (2010–2024)")
 
 # Create tabs - we'll use the selection to determine which tab is active
-snapshot_tab, qa_tab = st.tabs(["📊 Institution Snapshot", "💬 Ask a Question"])
+exec_tab, snapshot_tab, qa_tab = st.tabs([
+    "🏛 Executive Summary",
+    "📊 Institution Snapshot",
+    "💬 Ask a Question",
+])
+
+with exec_tab:
+    st.session_state.active_tab = 'executive_summary'
+    render_executive_summary_tab()
 
 with snapshot_tab:
     st.session_state.active_tab = 'snapshot'

@@ -1,8 +1,10 @@
 .env
+.DS_Store
 *.pyc
 __pycache__/
 .ipynb_checkpoints/
 *.db-journal
+secret/
 secrets/
 data/raw/
 data/transformed/
