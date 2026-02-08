@@ -6,3 +6,5 @@ plotly==5.18.0
 gspread
 fpdf2
 PyYAML
+weasyprint==62.3
+matplotlib==3.8.2
