@@ -7,3 +7,5 @@ gspread
 fpdf2
 PyYAML
 scikit-learn
+weasyprint==62.3
+matplotlib==3.8.2

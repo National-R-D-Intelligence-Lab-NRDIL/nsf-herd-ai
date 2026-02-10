@@ -465,6 +465,217 @@ def render_anchor_view(anchor_df, target_rank, total_institutions):
 #   - Rank trend over the window
 #   - Anchor view for context
 # ============================================================
+
+
+def render_executive_summary(metrics, insight, selected_institution, start_year, end_year, all_charts):
+    st.subheader("Strategic Summary")
+    
+    if not metrics:
+        st.warning("Unable to generate summary")
+        return
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric(
+            "Current Rank",
+            f"#{metrics['current_rank']}",
+            delta=metrics['rank_change'] if metrics['rank_change'] != 0 else None,
+            delta_color="normal"
+        )
+    with c2:
+        st.metric(
+            "Total R&D (2024)",
+            fmt_dollars(metrics['current_rd']),
+            delta=fmt_dollars(metrics['rd_change'])
+        )
+    with c3:
+        growth_delta = round(metrics['target_growth'] - metrics['peer_avg'], 1)
+        st.metric(
+            "5-Year Growth",
+            f"{metrics['target_growth']}%",
+            delta=f"{growth_delta}% vs peers"
+        )
+    
+    if metrics['target_growth'] > metrics['peer_avg'] + 5:
+        status = "🟢 Strong - Growing faster than peers"
+    elif metrics['target_growth'] < metrics['peer_avg'] - 5:
+        status = "🔴 Lagging - Growing slower than peers"
+    else:
+        status = "🟡 Moderate - Growth aligned with peers"
+    
+    st.info(f"**Status:** {status}")
+    st.info(f"💡 **Strategic Insight:** {insight}")
+    
+#    if st.button("📄 Download Strategic Report (PDF)", type="primary"):
+#        with st.spinner("Generating PDF report..."):
+#            pdf_bytes = engine.generate_pdf_report(
+#                selected_institution,
+#                start_year,
+#                end_year,
+#                all_charts
+#            )
+#            
+#            if pdf_bytes:
+#                st.download_button(
+#                    label="Download PDF",
+#                    data=pdf_bytes,
+#                    file_name=f"{selected_institution.replace(' ', '_')}_Report_{start_year}-{end_year}.pdf",
+#                    mime="application/pdf"
+#                )
+#            else:
+#                st.error("Failed to generate PDF. Please try again.")
+#    
+#    st.markdown("---")
+
+def render_peer_comparison(peers_df, stats, selected_institution):
+    if peers_df.empty:
+        st.warning("Insufficient peer data")
+        return
+    
+    st.subheader("Peer Performance Comparison")
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Your Growth", f"{stats['target_growth']}%")
+    with c2:
+        st.metric("Peer Average", f"{stats['peer_avg']}%")
+    with c3:
+        st.metric("Rank Among Peers", f"#{stats['rank']} of {stats['total_peers']}")
+    
+    fig = go.Figure()
+    
+    for name in peers_df['name'].unique():
+        inst_data = peers_df[peers_df['name'] == name]
+        is_target = name == selected_institution
+        
+        fig.add_trace(go.Scatter(
+            x=inst_data['year'],
+            y=inst_data['total_rd'],
+            mode='lines+markers',
+            name=name if is_target else None,
+            line=dict(
+                width=3 if is_target else 1,
+                color='#2563EB' if is_target else '#9CA3AF',
+                dash='solid' if is_target else 'dot'
+            ),
+            marker=dict(size=8 if is_target else 4),
+            showlegend=is_target,
+            hovertemplate=f'{name}<br>%{{y:$,.0f}}<extra></extra>'
+        ))
+    
+    fig.update_layout(
+        xaxis_title='Year',
+        yaxis_title='Total R&D',
+        height=400,
+        hovermode='x unified',
+        plot_bgcolor='white',
+        yaxis=dict(tickformat='$,.0s')
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"Comparing {selected_institution} to 8 institutions of similar size nationally")
+    st.markdown("---")
+
+def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year):
+    if breakdown_df.empty:
+        st.warning("No funding data available")
+        return
+    
+    st.subheader("Funding Source Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        row = breakdown_df.iloc[0]
+        sources = {
+            'Federal': int(row['federal']),
+            'Institutional': int(row['institutional']),
+            'State/Local': int(row['state_local']),
+            'Business': int(row['business']),
+            'Nonprofit': int(row['nonprofit']),
+            'Other': int(row['other_sources'])
+        }
+        
+        fig_pie = px.pie(
+            values=list(sources.values()),
+            names=list(sources.keys()),
+            title=f'{end_year} Funding Sources'
+        )
+        fig_pie.update_traces(textinfo='percent+label')
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
+    with col2:
+        fig_line = px.line(
+            trend_df,
+            x='year',
+            y='federal_pct',
+            title='Federal Dependency Over Time',
+            markers=True
+        )
+        fig_line.add_hline(
+            y=national_median,
+            line_dash='dash',
+            line_color='red',
+            annotation_text=f'National Median ({national_median}%)'
+        )
+        fig_line.update_layout(
+            xaxis_title='Year',
+            yaxis_title='Federal %',
+            yaxis_range=[0, 100]
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+    
+    latest_federal = trend_df.iloc[-1]['federal_pct']
+    if latest_federal > 70:
+        risk = "HIGH RISK - Heavy federal dependence (>70%)"
+        color = "error"
+    elif latest_federal > 60:
+        risk = "MODERATE RISK - Significant federal dependence (>60%)"
+        color = "warning"
+    else:
+        risk = "LOW RISK - Diversified funding base"
+        color = "success"
+    
+    if color == "error":
+        st.error(f"⚠️ {risk}")
+    elif color == "warning":
+        st.warning(f"⚠️ {risk}")
+    else:
+        st.success(f"✓ {risk}")
+    
+    st.markdown("---")
+
+def render_state_ranking(state_df, rank, market_share, state_name, selected_institution):
+    if state_df.empty:
+        st.warning("No state data available")
+        return
+    
+    st.subheader(f"{state_name} Competitive Position")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("State Rank", f"#{rank}")
+    with c2:
+        st.metric("State Market Share", f"{market_share}%")
+    
+    display_df = state_df.head(10).copy()
+    display_df['total_rd'] = display_df['total_rd'].apply(lambda x: fmt_dollars(x))
+    display_df['cagr'] = display_df['cagr'].apply(lambda x: f"{x}%")
+    display_df = display_df[['state_rank', 'name', 'total_rd', 'cagr']]
+    display_df.columns = ['Rank', 'Institution', '2024 R&D', '5-Yr CAGR']
+    
+    def highlight_target(row):
+        return ['background-color: #EFF6FF' if row['Institution'] == selected_institution else '' for _ in row]
+    
+    st.dataframe(
+        display_df.style.apply(highlight_target, axis=1),
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    st.caption(f"Top 10 institutions in {state_name} by R&D expenditure")
+    st.markdown("---")
+
 def render_snapshot_tab():
     institution_list = load_institution_list()
 
@@ -472,10 +683,8 @@ def render_snapshot_tab():
     with col_pick:
         selected_institution = st.selectbox(
             "Pick an institution",
-            options=[""] + institution_list,  # Add empty placeholder at start
-            index=0,  # Default to empty placeholder
-            placeholder="Select an institution...",
-            format_func=lambda x: "Select an institution..." if x == "" else x
+            options=institution_list,
+            index=None
         )
     with col_window:
         time_window = st.selectbox(
@@ -484,27 +693,161 @@ def render_snapshot_tab():
             index=0
         )
 
-    # If no institution selected, show message and return
     if not selected_institution or selected_institution == "":
-        st.info("👆 Select an institution above to view their R&D funding snapshot")
+        st.info("Select an institution above to view their R&D funding snapshot")
         return
 
     start_year = 2019 if "5-Year" in time_window else 2014
     end_year   = 2024
 
-    # Pull data
     rank_df = engine.get_rank_trend(selected_institution, start_year, end_year)
-    anchor_df, target_rank, total_inst = engine.get_anchor_view(selected_institution, end_year)
-
     if rank_df.empty:
-        st.warning(f"No data found for {selected_institution}. Try another institution.")
+        st.warning(f"No data found for {selected_institution}")
         return
 
-    # --- Stat cards ---
+    metrics = engine.get_executive_metrics(selected_institution, start_year, end_year)
+    insight = engine.generate_strategic_insight(selected_institution, start_year, end_year)
+    
+    all_charts = {}
+    
+    anchor_df, target_rank, total_inst = engine.get_anchor_view(selected_institution, end_year)
     current_rd   = int(rank_df.iloc[-1]['total_rd'])
     current_rank = int(rank_df.iloc[-1]['national_rank'])
     first_rank   = int(rank_df.iloc[0]['national_rank'])
     moved        = first_rank - current_rank
+    
+    years = rank_df['year'].tolist()
+    ranks = rank_df['national_rank'].tolist()
+    colors = ['#93C5FD'] * len(years)
+    colors[-1] = '#2563EB'
+    
+    fig_rank = go.Figure()
+    fig_rank.add_trace(go.Bar(
+        x=ranks,
+        y=[str(y) for y in years],
+        orientation='h',
+        marker_color=colors,
+        text=[f"#{r}" for r in ranks],
+        textposition='outside',
+        textfont=dict(size=14, color='#374151'),
+        hovertemplate='Year: %{y}<br>Rank: #%{x}<extra></extra>'
+    ))
+    max_rank_show = max(ranks) + 15
+    fig_rank.update_layout(
+        xaxis=dict(range=[max_rank_show, 0], title='National Rank', showgrid=True, gridcolor='#F3F4F6'),
+        yaxis=dict(title=None, categoryorder='array', categoryarray=[str(y) for y in years]),
+        height=220,
+        margin=dict(l=50, r=60, t=10, b=30),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+    )
+    fig_rank.update_xaxes(tickprefix='#')
+    all_charts['rank_trend'] = fig_rank
+    
+    names  = anchor_df['name'].tolist()
+    rd     = anchor_df['total_rd'].tolist()
+    ranks_anchor  = anchor_df['national_rank'].tolist()
+    is_tgt = anchor_df['is_target'].tolist()
+    colors_anchor = ['#2563EB' if t else '#9CA3AF' for t in is_tgt]
+    labels = [f"#{r}  {fmt_dollars(v)}" for r, v in zip(ranks_anchor, rd)]
+    display_names = []
+    for n, t in zip(names, is_tgt):
+        label = n if len(n) < 38 else n[:35] + "…"
+        if t:
+            label = f"► {label}"
+        display_names.append(label)
+    
+    fig_anchor = go.Figure()
+    fig_anchor.add_trace(go.Bar(
+        x=rd,
+        y=display_names,
+        orientation='h',
+        marker_color=colors_anchor,
+        text=labels,
+        textposition='outside',
+        textfont=dict(size=11, color='#374151'),
+        hovertemplate='%{y}<br>R&D: %{text}<extra></extra>'
+    ))
+    fig_anchor.update_layout(
+        xaxis=dict(title='Total R&D', showgrid=True, gridcolor='#F3F4F6', tickformat='$,.0f'),
+        yaxis=dict(title=None, categoryorder='array', categoryarray=display_names),
+        height=max(200, len(names) * 52),
+        margin=dict(l=280, r=100, t=10, b=30),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+    )
+    all_charts['anchor_view'] = fig_anchor
+
+    peers_df, peer_stats = engine.get_peer_comparison(selected_institution, start_year, end_year)
+    if not peers_df.empty:
+        fig_peers = go.Figure()
+        for name in peers_df['name'].unique():
+            inst_data = peers_df[peers_df['name'] == name]
+            is_target = name == selected_institution
+            fig_peers.add_trace(go.Scatter(
+                x=inst_data['year'],
+                y=inst_data['total_rd'],
+                mode='lines+markers',
+                name=name if is_target else None,
+                line=dict(
+                    width=3 if is_target else 1,
+                    color='#2563EB' if is_target else '#9CA3AF',
+                    dash='solid' if is_target else 'dot'
+                ),
+                marker=dict(size=8 if is_target else 4),
+                showlegend=is_target,
+                hovertemplate=f'{name}<br>%{{y:$,.0f}}<extra></extra>'
+            ))
+        fig_peers.update_layout(
+            xaxis_title='Year',
+            yaxis_title='Total R&D',
+            height=400,
+            hovermode='x unified',
+            plot_bgcolor='white',
+            yaxis=dict(tickformat='$,.0s')
+        )
+        all_charts['peer_comparison'] = fig_peers
+
+    breakdown_df, trend_df, national_median = engine.get_funding_breakdown(selected_institution, start_year, end_year)
+    if not breakdown_df.empty:
+        row = breakdown_df.iloc[0]
+        sources = {
+            'Federal': int(row['federal']),
+            'Institutional': int(row['institutional']),
+            'State/Local': int(row['state_local']),
+            'Business': int(row['business']),
+            'Nonprofit': int(row['nonprofit']),
+            'Other': int(row['other_sources'])
+        }
+        fig_pie = px.pie(
+            values=list(sources.values()),
+            names=list(sources.keys()),
+            title=f'{end_year} Funding Sources'
+        )
+        fig_pie.update_traces(textinfo='percent+label')
+        all_charts['funding_pie'] = fig_pie
+        
+        fig_fed = px.line(
+            trend_df,
+            x='year',
+            y='federal_pct',
+            title='Federal Dependency Over Time',
+            markers=True
+        )
+        fig_fed.add_hline(
+            y=national_median,
+            line_dash='dash',
+            line_color='red',
+            annotation_text=f'National Median ({national_median}%)'
+        )
+        fig_fed.update_layout(
+            xaxis_title='Year',
+            yaxis_title='Federal %',
+            yaxis_range=[0, 100]
+        )
+        all_charts['federal_trend'] = fig_fed
+
+    render_executive_summary(metrics, insight, selected_institution, start_year, end_year, all_charts)
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -519,19 +862,24 @@ def render_snapshot_tab():
             delta_color="normal"
         )
 
-    # --- Rank trend chart ---
     st.subheader("Ranking Over Time")
-    render_rank_trend(rank_df, total_inst)
+    st.plotly_chart(fig_rank, use_container_width=True)
+    st.caption(f"Ranked out of {total_inst:,} institutions nationally")
 
-    # --- Anchor view chart ---
     st.subheader("Where They Sit Nationally")
-    render_anchor_view(anchor_df, target_rank, total_inst)
+    st.plotly_chart(fig_anchor, use_container_width=True)
 
-# ============================================================
-# Free-form Q&A: visualization logic
-# Picks chart type based on the shape of the data and what the
-# user actually asked. Handles the common cases well enough.
-# ============================================================
+    if not peers_df.empty:
+        render_peer_comparison(peers_df, peer_stats, selected_institution)
+
+    if not breakdown_df.empty:
+        render_funding_breakdown(breakdown_df, trend_df, national_median, end_year)
+
+    state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
+    if not state_df.empty:
+        render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution)
+
+
 def create_visualization(df, question):
     if df is None or df.empty:
         return None
@@ -700,9 +1048,9 @@ st.markdown("Explore university R&D funding across 1,004 institutions (2010–20
 
 # Create tabs - we'll use the selection to determine which tab is active
 exec_tab, snapshot_tab, qa_tab = st.tabs([
-    "🏛 Executive Summary",
-    "📊 Institution Snapshot",
-    "💬 Ask a Question",
+    "Executive Summary",
+    "Institution Snapshot",
+    "Ask a Question",
 ])
 
 with exec_tab:
