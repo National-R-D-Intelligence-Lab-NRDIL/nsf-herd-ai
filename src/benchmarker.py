@@ -231,94 +231,88 @@ class AutoBenchmarker:
         return gaps
 
     # ------------------------------------------------------------------
-    # analyze_state_context
+    # get_peer_trend
     # ------------------------------------------------------------------
-    def analyze_state_context(self, target_inst_id: str) -> dict:
-        """Geographical benchmarking — rank and funding share within the state.
+    def get_peer_trend(
+        self,
+        target_inst_id: str,
+        db_path: str,
+        start_year: int = 2019,
+        end_year: int = 2024,
+    ) -> tuple[pd.DataFrame, dict]:
+        """Historical R&D trend for the target and its KNN peers.
 
-        Useful for VPRs who need to justify budgets to state legislators by
-        showing exactly where their institution stands among in-state peers.
+        Queries the database for yearly ``total_rd`` so the frontend can
+        draw a line chart showing growth trajectories over time — using
+        the *same* peer group as :meth:`analyze_gap`.
 
         Parameters
         ----------
         target_inst_id : str
-            The ``inst_id`` value of the target institution.
+            The ``inst_id`` of the target institution.
+        db_path : str
+            Path to the SQLite database.
+        start_year, end_year : int
+            Year range for the trend.
 
         Returns
         -------
-        dict
-            Keys:
-
-            - **state** (*str*) — two-letter state code.
-            - **state_rank** (*int*) — rank by ``total_rd`` within the state
-              (1 = highest).
-            - **total_in_state** (*int*) — number of institutions in the state.
-            - **state_funding_share** (*float*) — target's share of the state's
-              total ``state_local`` funding, as a percentage (0-100).
-            - **top_competitor** (*str | None*) — name of the #1-ranked
-              institution in the state, or ``None`` if the target *is* #1.
-
-        Raises
-        ------
-        RuntimeError
-            If :meth:`fit` has not been called yet.
-        KeyError
-            If *target_inst_id* is not present in the fitted data.
-        ValueError
-            If the fitted data does not contain a ``state`` column.
+        trend_df : pd.DataFrame
+            Columns: ``name``, ``year``, ``total_rd``, ``is_target``.
+        stats : dict
+            ``target_cagr``, ``peer_avg_cagr``, ``growth_rank``,
+            ``total_in_group``.
         """
         self._check_fitted()
-
-        if "state" not in self.data.columns:
-            raise ValueError(
-                "The fitted DataFrame does not contain a 'state' column. "
-                "Add 'state' to FEATURES_QUERY and re-run fetch + fit."
-            )
-
         target_row = self._find_target(target_inst_id)
+        peer_names = self.get_peers(target_inst_id)
+        target_name = target_row["name"].values[0]
+        all_names = [target_name] + peer_names
 
-        # --- Identify state ---
-        state_code = target_row["state"].values[0]
+        # Fetch historical data for the peer group
+        placeholders = ",".join(["?"] * len(all_names))
+        sql = f"""
+            SELECT name, year, total_rd
+            FROM institutions
+            WHERE name IN ({placeholders})
+              AND year BETWEEN ? AND ?
+            ORDER BY name, year
+        """
+        conn = sqlite3.connect(db_path)
+        try:
+            trend_df = pd.read_sql(sql, conn, params=all_names + [start_year, end_year])
+        finally:
+            conn.close()
 
-        # --- Filter to same state, rank by total_rd descending ---
-        state_df = (
-            self.data[self.data["state"] == state_code]
-            .sort_values("total_rd", ascending=False)
-            .reset_index(drop=True)
-        )
+        trend_df["is_target"] = trend_df["name"] == target_name
 
-        total_in_state = len(state_df)
+        # Compute CAGR for each institution
+        n_years = end_year - start_year
+        cagrs = {}
+        for name in all_names:
+            inst = trend_df[trend_df["name"] == name]
+            start_row = inst[inst["year"] == start_year]
+            end_row = inst[inst["year"] == end_year]
+            if start_row.empty or end_row.empty:
+                continue
+            s = float(start_row["total_rd"].values[0])
+            e = float(end_row["total_rd"].values[0])
+            if s > 0 and n_years > 0:
+                cagrs[name] = round(((e / s) ** (1 / n_years) - 1) * 100, 1)
 
-        # Rank is 1-indexed position in the sorted list
-        state_rank = int(
-            state_df[state_df["inst_id"] == target_inst_id].index[0]
-        ) + 1
+        target_cagr = cagrs.get(target_name, 0.0)
+        peer_cagrs = [v for k, v in cagrs.items() if k != target_name]
+        peer_avg_cagr = round(sum(peer_cagrs) / len(peer_cagrs), 1) if peer_cagrs else 0.0
+        growth_rank = sum(1 for c in peer_cagrs if c > target_cagr) + 1
 
-        # --- State funding share (based on state_local column) ---
-        state_total_funding = state_df["state_local"].sum()
-        target_funding = float(target_row["state_local"].values[0])
-
-        if state_total_funding > 0:
-            funding_share = round(
-                (target_funding / state_total_funding) * 100, 2
-            )
-        else:
-            funding_share = 0.0
-
-        # --- Top competitor ---
-        # If the target IS #1, or is the only school, there is no competitor.
-        if state_rank == 1 or total_in_state == 1:
-            top_competitor = None
-        else:
-            top_competitor = state_df.iloc[0]["name"]
-
-        return {
-            "state": state_code,
-            "state_rank": state_rank,
-            "total_in_state": total_in_state,
-            "state_funding_share": funding_share,
-            "top_competitor": top_competitor,
+        stats = {
+            "target_cagr": target_cagr,
+            "peer_avg_cagr": peer_avg_cagr,
+            "growth_rank": growth_rank,
+            "total_in_group": len(cagrs),
         }
+
+        return trend_df, stats
 
     # ------------------------------------------------------------------
     # helpers

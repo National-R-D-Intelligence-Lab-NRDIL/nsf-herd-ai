@@ -135,8 +135,7 @@ def fmt_dollars(n):
     return f"${n:,.0f}"
 
 # ============================================================
-# Executive Summary tab
-# National peer gap + state context in one view.
+# Labels for funding metric display names
 # ============================================================
 METRIC_LABELS = {
     "total_rd":       "Total R&D",
@@ -147,316 +146,6 @@ METRIC_LABELS = {
     "institutional":  "Institutional",
     "other_sources":  "Other Sources",
 }
-
-def render_executive_summary_tab():
-    institution_list = load_institution_list()
-
-    selected = st.selectbox(
-        "Select your institution",
-        options=[""] + institution_list,
-        index=0,
-        placeholder="Select an institution...",
-        format_func=lambda x: "Select an institution..." if x == "" else x,
-        key="exec_summary_institution_picker",
-    )
-
-    if not selected or selected == "":
-        st.info("Select an institution above to generate an executive summary.")
-        return
-
-    # --- Map name → inst_id via the benchmarker's fitted data ---
-    match = benchmarker.data[benchmarker.data["name"] == selected]
-    if match.empty:
-        st.warning(f"'{selected}' was not found in the benchmarking dataset.")
-        return
-    inst_id = match["inst_id"].values[0]
-
-    # --- Pull all three analyses ---
-    try:
-        gap_data    = benchmarker.analyze_gap(inst_id)
-        state_ctx   = benchmarker.analyze_state_context(inst_id)
-        peer_names  = benchmarker.get_peers(inst_id)
-    except Exception as e:
-        st.error(f"Benchmarking error: {e}")
-        return
-
-    target_rd    = next(g for g in gap_data if g["metric"] == "total_rd")
-    target_total = target_rd["my_val"]
-    peer_avg     = target_rd["peer_avg"]
-
-    # ==============================================================
-    # Row 1 — headline metrics
-    # ==============================================================
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric(
-            "Total R&D",
-            fmt_dollars(target_total),
-            help="Your institution's total R&D expenditures",
-        )
-    with c2:
-        delta = target_total - peer_avg
-        st.metric(
-            "vs Peer Average",
-            fmt_dollars(peer_avg),
-            delta=f"{'+' if delta >= 0 else ''}{fmt_dollars(abs(delta))}",
-            delta_color="normal" if delta >= 0 else "inverse",
-            help="Average total R&D of your 10 closest national peers",
-        )
-    with c3:
-        st.metric(
-            "State Rank",
-            f"#{state_ctx['state_rank']} of {state_ctx['total_in_state']}",
-            help=f"Rank by total R&D among all institutions in {state_ctx['state']}",
-        )
-    with c4:
-        st.metric(
-            "State Funding Share",
-            f"{state_ctx['state_funding_share']:.1f}%",
-            help="Your share of all state & local government R&D funding in your state",
-        )
-
-    st.divider()
-
-    # ==============================================================
-    # Row 2 — two-column deep dive
-    # ==============================================================
-    left, right = st.columns([3, 2])
-
-    # --- LEFT: National Peer Gap Chart ---
-    with left:
-        st.subheader("National Peer Comparison")
-        st.caption(f"Your funding profile vs. the average of your {len(peer_names)} closest peers")
-
-        labels   = [METRIC_LABELS.get(g["metric"], g["metric"]) for g in gap_data]
-        my_vals  = [g["my_val"] for g in gap_data]
-        avg_vals = [g["peer_avg"] for g in gap_data]
-
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            y=labels, x=my_vals, orientation="h",
-            name=selected.split(",")[0],  # short name
-            marker_color="#2563EB",
-            text=[fmt_dollars(v) for v in my_vals],
-            textposition="outside",
-            textfont=dict(size=11),
-        ))
-        fig.add_trace(go.Bar(
-            y=labels, x=avg_vals, orientation="h",
-            name="Peer Average",
-            marker_color="#D1D5DB",
-            text=[fmt_dollars(v) for v in avg_vals],
-            textposition="outside",
-            textfont=dict(size=11),
-        ))
-        fig.update_layout(
-            barmode="group",
-            height=340,
-            margin=dict(l=10, r=80, t=10, b=30),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            xaxis=dict(title=None, showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
-            yaxis=dict(title=None, autorange="reversed"),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Gap table in an expander
-        with st.expander("Detailed gap numbers"):
-            gap_df = []
-            for g in gap_data:
-                label = METRIC_LABELS.get(g["metric"], g["metric"])
-                gap_val = g["gap"]
-                gap_df.append({
-                    "Metric": label,
-                    "You": fmt_dollars(g["my_val"]),
-                    "Peer Avg": fmt_dollars(g["peer_avg"]),
-                    "Gap": f"{'+'if gap_val>=0 else ''}{fmt_dollars(abs(gap_val))}",
-                })
-            st.dataframe(gap_df, use_container_width=True, hide_index=True)
-
-    # --- RIGHT: State Context ---
-    with right:
-        st.subheader(f"State Context — {state_ctx['state']}")
-
-        # Top competitor callout
-        if state_ctx["top_competitor"]:
-            st.markdown(
-                f"**#1 in {state_ctx['state']}:** {state_ctx['top_competitor']}"
-            )
-        else:
-            st.success(f"You are #1 in {state_ctx['state']}")
-
-        # State rank position visual — horizontal bar showing where
-        # the institution sits among all in-state schools.
-        state_df = (
-            benchmarker.data[benchmarker.data["state"] == state_ctx["state"]]
-            .sort_values("total_rd", ascending=False)
-            .head(15)  # top 15 keeps the chart readable
-        )
-
-        is_target = state_df["inst_id"] == inst_id
-        colors = ["#2563EB" if t else "#93C5FD" for t in is_target]
-
-        # Truncate long names
-        display_names = []
-        for n, t in zip(state_df["name"], is_target):
-            label = n if len(n) < 35 else n[:32] + "…"
-            if t:
-                label = f"► {label}"
-            display_names.append(label)
-
-        fig2 = go.Figure()
-        fig2.add_trace(go.Bar(
-            x=state_df["total_rd"].tolist(),
-            y=display_names,
-            orientation="h",
-            marker_color=colors,
-            text=[fmt_dollars(v) for v in state_df["total_rd"]],
-            textposition="outside",
-            textfont=dict(size=11, color="#374151"),
-            hovertemplate="%{y}<br>%{text}<extra></extra>",
-        ))
-        fig2.update_layout(
-            height=max(200, len(state_df) * 36),
-            margin=dict(l=220, r=70, t=10, b=30),
-            xaxis=dict(title="Total R&D", showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
-            yaxis=dict(title=None, categoryorder="array", categoryarray=display_names),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-
-        if state_ctx["total_in_state"] > 15:
-            st.caption(
-                f"Showing top 15 of {state_ctx['total_in_state']} institutions in {state_ctx['state']}"
-            )
-
-    st.divider()
-
-    # ==============================================================
-    # Row 3 — Peer list
-    # ==============================================================
-    with st.expander(f"Your {len(peer_names)} National Peers (by funding similarity)"):
-        # Display as a numbered list with each peer's total R&D for context
-        peer_rows = []
-        for name in peer_names:
-            row = benchmarker.data[benchmarker.data["name"] == name]
-            if not row.empty:
-                peer_rows.append({
-                    "Institution": name,
-                    "State": row["state"].values[0],
-                    "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
-                })
-        st.dataframe(peer_rows, use_container_width=True, hide_index=True)
-
-# ============================================================
-# Snapshot: rank trend visualization
-# Horizontal bars per year. Latest year is darker.
-# A badge at top shows net movement over the window.
-# ============================================================
-def render_rank_trend(df, total_institutions):
-    if df.empty:
-        st.warning("No ranking data found for this institution.")
-        return
-
-    first_rank = int(df.iloc[0]['national_rank'])
-    last_rank  = int(df.iloc[-1]['national_rank'])
-    moved = first_rank - last_rank  # positive = climbed
-
-    # Badge: net movement
-    if moved > 0:
-        st.success(f"↑ Climbed {moved} positions over this period")
-    elif moved < 0:
-        st.error(f"↓ Dropped {abs(moved)} positions over this period")
-    else:
-        st.info("Rank unchanged over this period")
-
-    # Build the horizontal bar chart with Plotly
-    years = df['year'].tolist()
-    ranks = df['national_rank'].tolist()
-
-    # Color: latest year is bold blue, others are light
-    colors = ['#93C5FD'] * len(years)
-    colors[-1] = '#2563EB'
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=ranks,
-        y=[str(y) for y in years],
-        orientation='h',
-        marker_color=colors,
-        text=[f"#{r}" for r in ranks],
-        textposition='outside',
-        textfont=dict(size=14, color='#374151'),
-        hovertemplate='Year: %{y}<br>Rank: #%{x}<extra></extra>'
-    ))
-
-    # Invert x-axis so #1 is on the right (better = further right)
-    max_rank_show = max(ranks) + 15
-    fig.update_layout(
-        xaxis=dict(range=[max_rank_show, 0], title='National Rank', showgrid=True, gridcolor='#F3F4F6'),
-        yaxis=dict(title=None, categoryorder='array', categoryarray=[str(y) for y in years]),
-        height=220,
-        margin=dict(l=50, r=60, t=10, b=30),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-    )
-    fig.update_xaxes(tickprefix='#')
-
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"Ranked out of {total_institutions:,} institutions nationally")
-
-# ============================================================
-# Snapshot: anchor view visualization
-# Shows the target institution in context with benchmark schools
-# above and below. Target row is visually distinct.
-# ============================================================
-def render_anchor_view(anchor_df, target_rank, total_institutions):
-    if anchor_df.empty:
-        st.warning("Could not build anchor view.")
-        return
-
-    names  = anchor_df['name'].tolist()
-    rd     = anchor_df['total_rd'].tolist()
-    ranks  = anchor_df['national_rank'].tolist()
-    is_tgt = anchor_df['is_target'].tolist()
-
-    # Color and label: target stands out
-    colors = ['#2563EB' if t else '#9CA3AF' for t in is_tgt]
-    labels = [f"#{r}  {fmt_dollars(v)}" for r, v in zip(ranks, rd)]
-
-    # Truncate long names for the axis
-    display_names = []
-    for n, t in zip(names, is_tgt):
-        label = n if len(n) < 38 else n[:35] + "…"
-        if t:
-            label = f"► {label}"
-        display_names.append(label)
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=rd,
-        y=display_names,
-        orientation='h',
-        marker_color=colors,
-        text=labels,
-        textposition='outside',
-        textfont=dict(size=11, color='#374151'),
-        hovertemplate='%{y}<br>R&D: %{text}<extra></extra>'
-    ))
-
-    fig.update_layout(
-        xaxis=dict(title='Total R&D', showgrid=True, gridcolor='#F3F4F6',
-                   tickformat='$,.0f'),
-        yaxis=dict(title=None, categoryorder='array', categoryarray=display_names),
-        height=max(200, len(names) * 52),
-        margin=dict(l=280, r=100, t=10, b=30),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
 # Snapshot tab: the full institution snapshot experience.
@@ -527,54 +216,6 @@ def render_executive_summary(metrics, insight, selected_institution, start_year,
 #    
 #    st.markdown("---")
 
-def render_peer_comparison(peers_df, stats, selected_institution):
-    if peers_df.empty:
-        st.warning("Insufficient peer data")
-        return
-    
-    st.subheader("Peer Performance Comparison")
-    
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Your Growth", f"{stats['target_growth']}%")
-    with c2:
-        st.metric("Peer Average", f"{stats['peer_avg']}%")
-    with c3:
-        st.metric("Rank Among Peers", f"#{stats['rank']} of {stats['total_peers']}")
-    
-    fig = go.Figure()
-    
-    for name in peers_df['name'].unique():
-        inst_data = peers_df[peers_df['name'] == name]
-        is_target = name == selected_institution
-        
-        fig.add_trace(go.Scatter(
-            x=inst_data['year'],
-            y=inst_data['total_rd'],
-            mode='lines+markers',
-            name=name if is_target else None,
-            line=dict(
-                width=3 if is_target else 1,
-                color='#2563EB' if is_target else '#9CA3AF',
-                dash='solid' if is_target else 'dot'
-            ),
-            marker=dict(size=8 if is_target else 4),
-            showlegend=is_target,
-            hovertemplate=f'{name}<br>%{{y:$,.0f}}<extra></extra>'
-        ))
-    
-    fig.update_layout(
-        xaxis_title='Year',
-        yaxis_title='Total R&D',
-        height=400,
-        hovermode='x unified',
-        plot_bgcolor='white',
-        yaxis=dict(tickformat='$,.0s')
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"Comparing {selected_institution} to 8 institutions of similar size nationally")
-    st.markdown("---")
 
 def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year):
     if breakdown_df.empty:
@@ -660,7 +301,7 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
     
     display_df = state_df.head(10).copy()
     display_df['total_rd'] = display_df['total_rd'].apply(lambda x: fmt_dollars(x))
-    display_df['cagr'] = display_df['cagr'].apply(lambda x: f"{x}%")
+    display_df['cagr'] = display_df['cagr'].apply(lambda x: f"{x}%" if x == x else "N/A")
     display_df = display_df[['state_rank', 'name', 'total_rd', 'cagr']]
     display_df.columns = ['Rank', 'Institution', '2024 R&D', '5-Yr CAGR']
     
@@ -778,36 +419,6 @@ def render_snapshot_tab():
     )
     all_charts['anchor_view'] = fig_anchor
 
-    peers_df, peer_stats = engine.get_peer_comparison(selected_institution, start_year, end_year)
-    if not peers_df.empty:
-        fig_peers = go.Figure()
-        for name in peers_df['name'].unique():
-            inst_data = peers_df[peers_df['name'] == name]
-            is_target = name == selected_institution
-            fig_peers.add_trace(go.Scatter(
-                x=inst_data['year'],
-                y=inst_data['total_rd'],
-                mode='lines+markers',
-                name=name if is_target else None,
-                line=dict(
-                    width=3 if is_target else 1,
-                    color='#2563EB' if is_target else '#9CA3AF',
-                    dash='solid' if is_target else 'dot'
-                ),
-                marker=dict(size=8 if is_target else 4),
-                showlegend=is_target,
-                hovertemplate=f'{name}<br>%{{y:$,.0f}}<extra></extra>'
-            ))
-        fig_peers.update_layout(
-            xaxis_title='Year',
-            yaxis_title='Total R&D',
-            height=400,
-            hovermode='x unified',
-            plot_bgcolor='white',
-            yaxis=dict(tickformat='$,.0s')
-        )
-        all_charts['peer_comparison'] = fig_peers
-
     breakdown_df, trend_df, national_median = engine.get_funding_breakdown(selected_institution, start_year, end_year)
     if not breakdown_df.empty:
         row = breakdown_df.iloc[0]
@@ -847,34 +458,167 @@ def render_snapshot_tab():
         )
         all_charts['federal_trend'] = fig_fed
 
+    # --- Benchmarker: KNN peer analysis ---
+    bench_gap = None
+    bench_peers = None
+    bench_trend_df = None
+    bench_trend_stats = None
+    match = benchmarker.data[benchmarker.data["name"] == selected_institution]
+    if not match.empty:
+        inst_id = match["inst_id"].values[0]
+        try:
+            bench_gap   = benchmarker.analyze_gap(inst_id)
+            bench_peers = benchmarker.get_peers(inst_id)
+            bench_trend_df, bench_trend_stats = benchmarker.get_peer_trend(
+                inst_id, DATABASE_PATH, start_year, end_year
+            )
+        except Exception:
+            pass  # graceful fallback — benchmarker sections simply won't render
+
+    # --- Strategic Summary ---
     render_executive_summary(metrics, insight, selected_institution, start_year, end_year, all_charts)
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Current Rank", f"#{current_rank}", help=f"Out of {total_inst:,} institutions")
-    with c2:
-        st.metric(f"Total R&D ({end_year})", fmt_dollars(current_rd))
-    with c3:
-        st.metric(
-            f"{end_year - start_year}-Yr Movement",
-            f"↑{moved}" if moved > 0 else (f"↓{abs(moved)}" if moved < 0 else "—"),
-            delta=moved,
-            delta_color="normal"
-        )
-
+    # --- Ranking Over Time ---
     st.subheader("Ranking Over Time")
     st.plotly_chart(fig_rank, use_container_width=True)
     st.caption(f"Ranked out of {total_inst:,} institutions nationally")
 
-    st.subheader("Where They Sit Nationally")
+    # --- Where You Sit Nationally ---
+    st.subheader("Where You Sit Nationally")
     st.plotly_chart(fig_anchor, use_container_width=True)
 
-    if not peers_df.empty:
-        render_peer_comparison(peers_df, peer_stats, selected_institution)
+    # --- Unified Peer Analysis ---
+    if bench_gap and bench_peers:
+        st.subheader("Peer Analysis")
+        st.caption(
+            f"Compared against your {len(bench_peers)} closest national peers "
+            f"(matched across all funding dimensions)"
+        )
 
+        # Growth metric cards
+        if bench_trend_stats:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric(
+                    "Your Growth (CAGR)",
+                    f"{bench_trend_stats['target_cagr']}%",
+                )
+            with c2:
+                st.metric(
+                    "Peer Avg Growth",
+                    f"{bench_trend_stats['peer_avg_cagr']}%",
+                )
+            with c3:
+                st.metric(
+                    "Growth Rank",
+                    f"#{bench_trend_stats['growth_rank']} of {bench_trend_stats['total_in_group']}",
+                )
+
+        # Two views under sub-tabs: Funding Profile | Growth Over Time
+        tab_profile, tab_growth = st.tabs(["Funding Profile", "Growth Over Time"])
+
+        with tab_profile:
+            gap_labels = [METRIC_LABELS.get(g["metric"], g["metric"]) for g in bench_gap]
+            my_vals    = [g["my_val"] for g in bench_gap]
+            avg_vals   = [g["peer_avg"] for g in bench_gap]
+
+            fig_gap = go.Figure()
+            fig_gap.add_trace(go.Bar(
+                y=gap_labels, x=my_vals, orientation="h",
+                name=selected_institution.split(",")[0],
+                marker_color="#2563EB",
+                text=[fmt_dollars(v) for v in my_vals],
+                textposition="outside",
+                textfont=dict(size=12),
+            ))
+            fig_gap.add_trace(go.Bar(
+                y=gap_labels, x=avg_vals, orientation="h",
+                name="Peer Average",
+                marker_color="#D1D5DB",
+                text=[fmt_dollars(v) for v in avg_vals],
+                textposition="outside",
+                textfont=dict(size=12),
+            ))
+            fig_gap.update_layout(
+                barmode="group",
+                height=380,
+                margin=dict(l=10, r=100, t=10, b=30),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                xaxis=dict(title=None, showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
+                yaxis=dict(title=None, autorange="reversed"),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+            )
+            st.plotly_chart(fig_gap, use_container_width=True)
+
+            with st.expander("Detailed gap numbers"):
+                gap_table = []
+                for g in bench_gap:
+                    label = METRIC_LABELS.get(g["metric"], g["metric"])
+                    gap_val = g["gap"]
+                    gap_table.append({
+                        "Metric": label,
+                        "You": fmt_dollars(g["my_val"]),
+                        "Peer Avg": fmt_dollars(g["peer_avg"]),
+                        "Gap": f"{'+'if gap_val>=0 else ''}{fmt_dollars(abs(gap_val))}",
+                    })
+                st.dataframe(gap_table, use_container_width=True, hide_index=True)
+
+        with tab_growth:
+            if bench_trend_df is not None and not bench_trend_df.empty:
+                fig_trend = go.Figure()
+                for name in bench_trend_df["name"].unique():
+                    inst_data = bench_trend_df[bench_trend_df["name"] == name]
+                    is_target = bool(inst_data["is_target"].iloc[0])
+
+                    fig_trend.add_trace(go.Scatter(
+                        x=inst_data["year"],
+                        y=inst_data["total_rd"],
+                        mode="lines+markers",
+                        name=name if is_target else None,
+                        line=dict(
+                            width=3 if is_target else 1,
+                            color="#2563EB" if is_target else "#9CA3AF",
+                            dash="solid" if is_target else "dot",
+                        ),
+                        marker=dict(size=8 if is_target else 4),
+                        showlegend=is_target,
+                        hovertemplate=f"{name}<br>%{{y:$,.0f}}<extra></extra>",
+                    ))
+
+                fig_trend.update_layout(
+                    xaxis_title="Year",
+                    yaxis_title="Total R&D",
+                    height=400,
+                    hovermode="x unified",
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    yaxis=dict(tickformat="$,.0s"),
+                )
+                st.plotly_chart(fig_trend, use_container_width=True)
+            else:
+                st.info("Historical trend data is not available.")
+
+        # Peer list — always visible below both sub-tabs
+        with st.expander(f"Who are my {len(bench_peers)} peers?"):
+            peer_rows = []
+            for pname in bench_peers:
+                row = benchmarker.data[benchmarker.data["name"] == pname]
+                if not row.empty:
+                    peer_rows.append({
+                        "Institution": pname,
+                        "State": row["state"].values[0],
+                        "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                    })
+            st.dataframe(peer_rows, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+    # --- Funding Source Analysis ---
     if not breakdown_df.empty:
         render_funding_breakdown(breakdown_df, trend_df, national_median, end_year)
 
+    # --- State Competitive Position ---
     state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
     if not state_df.empty:
         render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution)
@@ -1047,15 +791,7 @@ st.title("NSF HERD Research Intelligence")
 st.markdown("Explore university R&D funding across 1,004 institutions (2010–2024)")
 
 # Create tabs - we'll use the selection to determine which tab is active
-exec_tab, snapshot_tab, qa_tab = st.tabs([
-    "Executive Summary",
-    "Institution Snapshot",
-    "Ask a Question",
-])
-
-with exec_tab:
-    st.session_state.active_tab = 'executive_summary'
-    render_executive_summary_tab()
+snapshot_tab, qa_tab = st.tabs(["Institution Snapshot", "Ask a Question"])
 
 with snapshot_tab:
     st.session_state.active_tab = 'snapshot'
