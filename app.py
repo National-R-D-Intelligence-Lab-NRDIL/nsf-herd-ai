@@ -277,26 +277,26 @@ def render_executive_summary(metrics, insight, selected_institution, start_year,
     st.info(f"**Status:** {status}")
     st.info(f"💡 **Strategic Insight:** {insight}")
     
-    if st.button("📄 Download Strategic Report (PDF)", type="primary"):
-        with st.spinner("Generating PDF report..."):
-            pdf_bytes = engine.generate_pdf_report(
-                selected_institution,
-                start_year,
-                end_year,
-                all_charts
-            )
-            
-            if pdf_bytes:
-                st.download_button(
-                    label="Download PDF",
-                    data=pdf_bytes,
-                    file_name=f"{selected_institution.replace(' ', '_')}_Report_{start_year}-{end_year}.pdf",
-                    mime="application/pdf"
-                )
-            else:
-                st.error("Failed to generate PDF. Please try again.")
-    
-    st.markdown("---")
+#    if st.button("📄 Download Strategic Report (PDF)", type="primary"):
+#        with st.spinner("Generating PDF report..."):
+#            pdf_bytes = engine.generate_pdf_report(
+#                selected_institution,
+#                start_year,
+#                end_year,
+#                all_charts
+#            )
+#            
+#            if pdf_bytes:
+#                st.download_button(
+#                    label="Download PDF",
+#                    data=pdf_bytes,
+#                    file_name=f"{selected_institution.replace(' ', '_')}_Report_{start_year}-{end_year}.pdf",
+#                    mime="application/pdf"
+#                )
+#            else:
+#                st.error("Failed to generate PDF. Please try again.")
+#    
+#    st.markdown("---")
 
 def render_peer_comparison(peers_df, stats, selected_institution):
     if peers_df.empty:
@@ -454,10 +454,8 @@ def render_snapshot_tab():
     with col_pick:
         selected_institution = st.selectbox(
             "Pick an institution",
-            options=[""] + institution_list,
-            index=0,
-            placeholder="Select an institution...",
-            format_func=lambda x: "Select an institution..." if x == "" else x
+            options=institution_list,
+            index=None
         )
     with col_window:
         time_window = st.selectbox(
@@ -467,7 +465,7 @@ def render_snapshot_tab():
         )
 
     if not selected_institution or selected_institution == "":
-        st.info("👆 Select an institution above to view their R&D funding snapshot")
+        st.info("Select an institution above to view their R&D funding snapshot")
         return
 
     start_year = 2019 if "5-Year" in time_window else 2014
@@ -820,7 +818,7 @@ st.title("NSF HERD Research Intelligence")
 st.markdown("Explore university R&D funding across 1,004 institutions (2010–2024)")
 
 # Create tabs - we'll use the selection to determine which tab is active
-snapshot_tab, qa_tab = st.tabs(["📊 Institution Snapshot", "💬 Ask a Question"])
+snapshot_tab, qa_tab = st.tabs(["Institution Snapshot", "Ask a Question"])
 
 with snapshot_tab:
     st.session_state.active_tab = 'snapshot'
