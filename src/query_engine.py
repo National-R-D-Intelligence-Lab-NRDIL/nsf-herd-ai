@@ -99,6 +99,10 @@ class HERDQueryEngine:
     def get_institution_list(self):
         # Get the most recent name for each inst_id to handle name changes over time
         # (e.g., "University of North Texas" became "University of North Texas, Denton" in 2011)
+        #
+        # The year range is derived from the data itself: we take the last 6 years
+        # ending at whatever the latest survey year is. This way we don't need to
+        # touch this code when new HERD data is loaded -- it just works.
         return self._query("""
             WITH recent_names AS (
                 SELECT DISTINCT inst_id, name
@@ -108,7 +112,9 @@ class HERDQueryEngine:
             valid_institutions AS (
                 SELECT inst_id
                 FROM institutions
-                WHERE year BETWEEN 2019 AND 2024
+                WHERE year BETWEEN
+                    (SELECT MAX(year) - 5 FROM institutions)
+                    AND (SELECT MAX(year) FROM institutions)
                 GROUP BY inst_id
                 HAVING COUNT(DISTINCT year) >= 5 
                    AND SUM(total_rd) > 0
@@ -119,8 +125,13 @@ class HERDQueryEngine:
             ORDER BY rn.name;
         """)['name'].tolist()
 
+    def get_max_year(self):
+        """Return the latest survey year in the database."""
+        return int(self._query(
+            "SELECT MAX(year) as max_year FROM institutions"
+        )['max_year'].iloc[0])
+
     # ----------------------------------------------------------
-    # Snapshot: rank trend
     # Returns the institution's national rank for each year in
     # the selected window. RANK() is partitioned by year so each
     # year's ranking is independent.
@@ -253,10 +264,26 @@ Rules:
                 raise e
 
     def execute_sql(self, sql):
-        """Runs the SQL against the local SQLite database, returns a DataFrame."""
-        conn = sqlite3.connect(self.db_path)
-        result = pd.read_sql(sql, conn)
-        conn.close()
+        """Run a SELECT query against the database and return results.
+
+        Safety: Only SELECT statements are allowed. The LLM generates SQL
+        from user input, so we must prevent any writes/deletes. We also
+        open the connection in read-only mode as a second layer of defense.
+        """
+        cleaned = sql.strip().upper()
+        if not cleaned.startswith("SELECT") and not cleaned.startswith("WITH"):
+            raise ValueError(
+                "Only SELECT queries are allowed. "
+                f"Got: {sql[:50]}..."
+            )
+
+        conn = sqlite3.connect(
+            f"file:{self.db_path}?mode=ro", uri=True
+        )
+        try:
+            result = pd.read_sql(sql, conn)
+        finally:
+            conn.close()
         return result
 
     def ask(self, question):
@@ -308,9 +335,12 @@ Summary:"""
                     continue
                 raise e
 
-        # Dollar signs and backslashes cause rendering issues in Streamlit
+        # Streamlit markdown interprets $ as LaTeX delimiters.
+        # Escape them so dollar amounts render as text, not math.
+        # (Previously we stripped $ entirely, losing the currency symbol.)
         summary = response.text.strip()
-        summary = summary.replace('$', '').replace('\\', '')
+        summary = summary.replace('$', '\\$')
+        summary = summary.replace('\\\\$', '\\$')  # avoid double-escaping
         summary = ' '.join(summary.split())
 
         return summary
@@ -369,7 +399,7 @@ Summary:"""
         
         names = df['name'].unique().tolist()
         growth_df = self._query(growth_sql, params=(
-            end_year, start_year, end_year, start_year, 
+            start_year, end_year, end_year, start_year, 
             end_year - start_year, *names
         ))
         
@@ -405,14 +435,20 @@ Summary:"""
             ORDER BY year
         """, params=(institution_name, start_year, end_year))
         
-        national_median = self._query(f"""
-            SELECT AVG(federal_pct) as median
-            FROM (
-                SELECT federal * 100.0 / NULLIF(total_rd, 0) as federal_pct
-                FROM institutions
-                WHERE year = {end_year}
-            )
-        """)['median'].iloc[0]
+        # Compute the actual national median federal percentage.
+        # SQLite doesn't have a MEDIAN() function, so we grab the middle
+        # value by sorting and picking the row at the 50th percentile.
+        fed_pcts = self._query(f"""
+            SELECT federal * 100.0 / NULLIF(total_rd, 0) as federal_pct
+            FROM institutions
+            WHERE year = ? AND total_rd > 0
+            ORDER BY federal_pct
+        """, params=(end_year,))
+
+        if not fed_pcts.empty:
+            national_median = round(float(fed_pcts['federal_pct'].median()), 1)
+        else:
+            national_median = 0.0
         
         return latest, trend, round(national_median, 1)
 
@@ -431,17 +467,19 @@ Summary:"""
                 SELECT name, 
                        MAX(CASE WHEN year = ? THEN total_rd END) as rd_latest,
                        MAX(CASE WHEN year = ? THEN total_rd END) as rd_start,
+                       MAX(CASE WHEN year = ? THEN federal END) as fed_latest,
                        RANK() OVER (ORDER BY MAX(CASE WHEN year = ? THEN total_rd END) DESC) as state_rank
                 FROM institutions
                 WHERE state = ?
                 GROUP BY name
             )
             SELECT name, rd_latest as total_rd, state_rank,
-                   ROUND((POWER(rd_latest * 1.0 / NULLIF(rd_start, 0), 1.0/?) - 1) * 100, 1) as cagr
+                   ROUND((POWER(rd_latest * 1.0 / NULLIF(rd_start, 0), 1.0/?) - 1) * 100, 1) as cagr,
+                   ROUND(fed_latest * 100.0 / NULLIF(rd_latest, 0), 1) as federal_pct
             FROM state_inst
             WHERE rd_latest > 0
             ORDER BY state_rank
-        """, params=(year, start_year, year, state, year - start_year))
+        """, params=(year, start_year, year, year, state, year - start_year))
         
         target_row = state_df[state_df['name'] == institution_name]
         if target_row.empty:
