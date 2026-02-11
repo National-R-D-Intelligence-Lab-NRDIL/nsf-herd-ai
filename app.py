@@ -24,7 +24,7 @@ def get_env(key, default=None):
 
 GEMINI_API_KEY = get_env('GEMINI_API_KEY')
 DATABASE_PATH  = get_env('DATABASE_PATH', 'data/herd.db')
-PASSWORD       = get_env('PASSWORD', 'unt2026')
+PASSWORD       = get_env('PASSWORD')
 GOOGLE_SHEET_ID    = get_env('GOOGLE_SHEET_ID')
 GOOGLE_SHEETS_CREDS = get_env('GOOGLE_SHEETS_CREDS')
 
@@ -32,21 +32,37 @@ if not GEMINI_API_KEY:
     st.error("GEMINI_API_KEY is not set. Add it to your environment variables.")
     st.stop()
 
+if not PASSWORD:
+    st.error("PASSWORD is not set. Add it to your environment variables.")
+    st.stop()
+
 # ============================================================
 # Authentication
+# The purpose is logging (who asked what) and rate-limiting
+# to prevent Gemini API exhaustion -- not full user auth.
 # ============================================================
+MAX_QUERIES_PER_HOUR = 50
+
 def check_login():
     if st.session_state.get('logged_in'):
         return
 
-    st.title("🔐 Login Required")
+    st.title("Login Required")
     username = st.text_input("Username", placeholder="Enter your name")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        if username and password == PASSWORD:
+        # Check both fields are filled and password is correct.
+        # Original bug: `if username and password == PASSWORD` evaluates
+        # as `(bool(username)) and (password == PASSWORD)`, which means
+        # any non-empty username passes. That's actually fine for our
+        # use case (logging + rate limiting, not real auth), but let's
+        # be explicit about requiring both fields.
+        if username.strip() and password == PASSWORD:
             st.session_state.logged_in = True
-            st.session_state.username = username
+            st.session_state.username = username.strip()
+            st.session_state.query_count = 0
+            st.session_state.query_window_start = datetime.now()
             st.rerun()
         else:
             st.error("Invalid credentials")
@@ -173,7 +189,7 @@ def render_executive_summary(metrics, insight, selected_institution, start_year,
         )
     with c2:
         st.metric(
-            "Total R&D (2024)",
+            "Total R&D ({})".format(end_year),
             fmt_dollars(metrics['current_rd']),
             delta=fmt_dollars(metrics['rd_change'])
         )
@@ -286,18 +302,78 @@ def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year):
     
     st.markdown("---")
 
-def render_state_ranking(state_df, rank, market_share, state_name, selected_institution):
+def render_state_ranking(state_df, rank, market_share, state_name, selected_institution, end_year):
     if state_df.empty:
         st.warning("No state data available")
         return
-    
+
     st.subheader(f"{state_name} Competitive Position")
-    
+
     c1, c2 = st.columns(2)
     with c1:
         st.metric("State Rank", f"#{rank}")
     with c2:
         st.metric("State Market Share", f"{market_share}%")
+
+    # ------------------------------------------------------------------
+    # State peer band: the 3 institutions above and 3 below in state rank.
+    # This answers "Who am I actually competing with for the next state
+    # grant cycle?" -- more actionable than seeing the top 10 when you're
+    # ranked #18. Includes federal dependency so VPRs can see which
+    # competitors are more/less exposed to federal policy shifts.
+    # ------------------------------------------------------------------
+    band_above = 3
+    band_below = 3
+    band_start = max(rank - band_above, 1)
+    band_end = rank + band_below
+
+    band_df = state_df[
+        (state_df['state_rank'] >= band_start)
+        & (state_df['state_rank'] <= band_end)
+    ].copy()
+
+    if not band_df.empty and len(band_df) > 1:
+        st.markdown("**Your Competitive Band**")
+        band_display = band_df.copy()
+        band_display['total_rd'] = band_display['total_rd'].apply(fmt_dollars)
+        band_display['cagr'] = band_display['cagr'].apply(
+            lambda x: f"{x}%" if x == x else "N/A"
+        )
+        band_display['federal_pct'] = band_display['federal_pct'].apply(
+            lambda x: f"{x}%" if x == x else "N/A"
+        )
+        band_display = band_display[['state_rank', 'name', 'total_rd', 'cagr', 'federal_pct']]
+        band_display.columns = ['Rank', 'Institution', f'{end_year} R&D', '5-Yr CAGR', 'Federal %']
+
+        def highlight_target(row):
+            if row['Institution'] == selected_institution:
+                return ['background-color: #EFF6FF'] * len(row)
+            return [''] * len(row)
+
+        st.dataframe(
+            band_display.style.apply(highlight_target, axis=1),
+            use_container_width=True,
+            hide_index=True
+        )
+        st.caption(
+            f"Institutions ranked #{band_start}–#{band_end} in {state_name}. "
+            f"Federal % shows each institution's federal funding dependency."
+        )
+
+    # ------------------------------------------------------------------
+    # Top 10 state leaders (the existing table, now in an expander so it
+    # doesn't dominate the page when the user's institution isn't in it).
+    # ------------------------------------------------------------------
+    with st.expander(f"Top 10 in {state_name}"):
+        display_df = state_df.head(10).copy()
+        display_df['total_rd'] = display_df['total_rd'].apply(fmt_dollars)
+        display_df['cagr'] = display_df['cagr'].apply(
+            lambda x: f"{x}%" if x == x else "N/A"
+        )
+        display_df = display_df[['state_rank', 'name', 'total_rd', 'cagr']]
+        display_df.columns = ['Rank', 'Institution', f'{end_year} R&D', '5-Yr CAGR']
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
     
     display_df = state_df.head(10).copy()
     display_df['total_rd'] = display_df['total_rd'].apply(lambda x: fmt_dollars(x))
@@ -320,6 +396,10 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
 def render_snapshot_tab():
     institution_list = load_institution_list()
 
+    # Derive the latest year from the database so the dropdown labels
+    # and year math stay correct when new HERD data is loaded.
+    max_year = engine.get_max_year()
+
     col_pick, col_window = st.columns([2, 1])
     with col_pick:
         selected_institution = st.selectbox(
@@ -330,7 +410,10 @@ def render_snapshot_tab():
     with col_window:
         time_window = st.selectbox(
             "Time window",
-            options=["5-Year (2019–2024)", "10-Year (2014–2024)"],
+            options=[
+                f"5-Year ({max_year - 5}–{max_year})",
+                f"10-Year ({max_year - 10}–{max_year})",
+            ],
             index=0
         )
 
@@ -338,8 +421,8 @@ def render_snapshot_tab():
         st.info("Select an institution above to view their R&D funding snapshot")
         return
 
-    start_year = 2019 if "5-Year" in time_window else 2014
-    end_year   = 2024
+    start_year = max_year - 5 if "5-Year" in time_window else max_year - 10
+    end_year   = max_year
 
     rank_df = engine.get_rank_trend(selected_institution, start_year, end_year)
     if rank_df.empty:
@@ -459,11 +542,16 @@ def render_snapshot_tab():
         all_charts['federal_trend'] = fig_fed
 
     # --- Benchmarker: KNN peer analysis ---
+    # The benchmarker fits on the latest year only (681 institutions),
+    # while the dropdown filters for 5+ years of data (612 institutions).
+    # Some institutions may be in one set but not the other, so we handle
+    # the mismatch gracefully rather than crashing.
     bench_gap = None
     bench_peers = None
     bench_trend_df = None
     bench_trend_stats = None
-    match = benchmarker.data[benchmarker.data["name"] == selected_institution]
+    bench_data = benchmarker.data  # .data returns a copy (safe to use)
+    match = bench_data[bench_data["name"] == selected_institution]
     if not match.empty:
         inst_id = match["inst_id"].values[0]
         try:
@@ -473,7 +561,7 @@ def render_snapshot_tab():
                 inst_id, DATABASE_PATH, start_year, end_year
             )
         except Exception:
-            pass  # graceful fallback — benchmarker sections simply won't render
+            pass  # graceful fallback -- benchmarker sections simply won't render
 
     # --- Strategic Summary ---
     render_executive_summary(metrics, insight, selected_institution, start_year, end_year, all_charts)
@@ -599,11 +687,11 @@ def render_snapshot_tab():
             else:
                 st.info("Historical trend data is not available.")
 
-        # Peer list — always visible below both sub-tabs
+        # Peer list -- always visible below both sub-tabs
         with st.expander(f"Who are my {len(bench_peers)} peers?"):
             peer_rows = []
             for pname in bench_peers:
-                row = benchmarker.data[benchmarker.data["name"] == pname]
+                row = bench_data[bench_data["name"] == pname]
                 if not row.empty:
                     peer_rows.append({
                         "Institution": pname,
@@ -611,7 +699,21 @@ def render_snapshot_tab():
                         "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
                     })
             st.dataframe(peer_rows, use_container_width=True, hide_index=True)
+            st.caption(
+                "Peers are identified relative to your institution's funding "
+                "profile and may differ when viewed from another institution's "
+                "perspective."
+            )
 
+        st.markdown("---")
+    else:
+        # Institution exists in the dropdown but not in the benchmarker,
+        # or the benchmarker had an error. Show everything else normally.
+        st.info(
+            "Peer analysis is not available for this institution. "
+            "This can happen when an institution was not included in "
+            "the most recent HERD survey year."
+        )
         st.markdown("---")
 
     # --- Funding Source Analysis ---
@@ -621,7 +723,7 @@ def render_snapshot_tab():
     # --- State Competitive Position ---
     state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
     if not state_df.empty:
-        render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution)
+        render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution, end_year)
 
 
 def create_visualization(df, question):
@@ -731,6 +833,24 @@ def render_qa_tab():
 # ============================================================
 def process_question(question, enable_viz=True):
     """Process a new Q&A question and add to history"""
+    # Rate limiting: reset the counter if an hour has passed,
+    # otherwise check if the user has exceeded the limit.
+    now = datetime.now()
+    window_start = st.session_state.get('query_window_start', now)
+    if (now - window_start).total_seconds() > 3600:
+        st.session_state.query_count = 0
+        st.session_state.query_window_start = now
+
+    query_count = st.session_state.get('query_count', 0)
+    if query_count >= MAX_QUERIES_PER_HOUR:
+        st.error(
+            f"You've reached the limit of {MAX_QUERIES_PER_HOUR} queries per hour. "
+            "Please wait before asking more questions."
+        )
+        return
+
+    st.session_state.query_count = query_count + 1
+
     with st.chat_message("user"):
         st.write(question)
 
