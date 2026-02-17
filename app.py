@@ -155,15 +155,24 @@ engine = HERDQueryEngine(GEMINI_API_KEY, DATABASE_PATH)
 
 # ============================================================
 # Benchmarker setup — cached so the KNN model is fitted once.
+# A hash of the benchmarker source file is included as a cache
+# key so that any code change automatically invalidates the
+# stale cached instance without needing a manual app restart.
 # ============================================================
+import hashlib as _hashlib, pathlib as _pathlib
+
+def _benchmarker_version() -> str:
+    src = _pathlib.Path(__file__).parent / "src" / "benchmarker.py"
+    return _hashlib.md5(src.read_bytes()).hexdigest()[:8]
+
 @st.cache_resource(show_spinner="Loading benchmarking model...")
-def load_benchmarker():
+def load_benchmarker(_version: str = ""):   # _version param busts the cache on code changes
     df = fetch_university_features(DATABASE_PATH)
-    bench = AutoBenchmarker(n_peers=10)
+    bench = AutoBenchmarker(n_peers=20)
     bench.fit(df)
     return bench
 
-benchmarker = load_benchmarker()
+benchmarker = load_benchmarker(_benchmarker_version())
 
 # ============================================================
 # Session state
@@ -172,6 +181,8 @@ if 'history' not in st.session_state:
     st.session_state.history = []
 if 'pending_question' not in st.session_state:
     st.session_state.pending_question = None
+if 'custom_peers_multiselect' not in st.session_state:
+    st.session_state['custom_peers_multiselect'] = []  # drives the multiselect widget
 
 # Cache the institution list — it's a full table scan, no point
 # running it on every rerender.
@@ -211,13 +222,37 @@ METRIC_LABELS = {
 # ============================================================
 
 
-def render_executive_summary(metrics, insight, selected_institution, start_year, end_year, all_charts, callouts=None):
+def render_executive_summary(
+    metrics, insight, selected_institution, start_year, end_year, all_charts,
+    callouts=None,
+    bench_trend_stats=None,
+    n_peers=None,
+    custom_peer_mode=False,
+):
     st.subheader("Strategic Summary")
     
     if not metrics:
         st.warning("Unable to generate summary")
         return
-    
+
+    # Decide which growth numbers to use for the KPI card and Peer Position banner.
+    # Priority: KNN/custom bench_trend_stats > legacy resource-parity metrics.
+    # This keeps the banner consistent with the Peer Analysis section below.
+    if bench_trend_stats:
+        target_growth = bench_trend_stats['target_cagr']
+        peer_avg      = bench_trend_stats['peer_avg_cagr']
+        if custom_peer_mode:
+            peer_label = "custom peers"
+        elif n_peers:
+            peer_label = f"{n_peers} KNN peers"
+        else:
+            peer_label = "KNN peers"
+    else:
+        # Fallback: resource-parity peer set from get_peer_comparison
+        target_growth = metrics['target_growth']
+        peer_avg      = metrics['peer_avg']
+        peer_label    = "resource-parity peers"
+
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric(
@@ -233,11 +268,12 @@ def render_executive_summary(metrics, insight, selected_institution, start_year,
             delta=fmt_dollars(metrics['rd_change'])
         )
     with c3:
-        growth_delta = round(metrics['target_growth'] - metrics['peer_avg'], 1)
+        growth_delta = round(target_growth - peer_avg, 1)
+        growth_years = end_year - start_year
         st.metric(
-            "5-Year Growth",
-            f"{metrics['target_growth']}%",
-            delta=f"{growth_delta}% vs peers"
+            f"{growth_years}-Year Growth ({start_year}–{end_year})",
+            f"{target_growth}%",
+            delta=f"{growth_delta}% vs {peer_label}"
         )
     
     # Second row: field and agency callouts from the new tables
@@ -254,12 +290,12 @@ def render_executive_summary(metrics, insight, selected_institution, start_year,
                           delta=f"{callouts['top_agency_pct']}% of federal",
                           delta_color="off")
 
-    if metrics['target_growth'] > metrics['peer_avg'] + 5:
-        status = "Growing faster than peers"
-    elif metrics['target_growth'] < metrics['peer_avg'] - 5:
-        status = "Growing slower than peers"
+    if target_growth > peer_avg + 5:
+        status = f"Growing faster than {peer_label}"
+    elif target_growth < peer_avg - 5:
+        status = f"Growing slower than {peer_label}"
     else:
-        status = "Growth aligned with peers"
+        status = f"Growth aligned with {peer_label}"
     
     st.info(f"**Peer Position:** {status}")
     st.info(f"💡 **Strategic Insight:** {insight}")
@@ -434,7 +470,12 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
     st.caption(f"Top 10 institutions in {state_name} by R&D expenditure")
     st.markdown("---")
 
-def render_snapshot_tab(selected_institution, start_year, end_year, inst_id):
+def render_snapshot_tab(
+    selected_institution, start_year, end_year, inst_id,
+    n_peers: int = 10,
+    custom_peer_mode: bool = False,
+    custom_peer_inst_ids: list | None = None,
+):
     """Snapshot tab — now receives selection from top-level picker."""
     max_year = end_year
 
@@ -444,7 +485,6 @@ def render_snapshot_tab(selected_institution, start_year, end_year, inst_id):
         return
 
     metrics = engine.get_executive_metrics(selected_institution, start_year, end_year)
-    insight = engine.generate_strategic_insight(selected_institution, start_year, end_year)
     
     all_charts = {}
     
@@ -564,22 +604,87 @@ def render_snapshot_tab(selected_institution, start_year, end_year, inst_id):
     bench_peers = None
     bench_trend_df = None
     bench_trend_stats = None
+    # State benchmarking variables
+    state_gap = None
+    state_trend_df = None
+    state_trend_stats = None
+    state_peer_names = []
+    state_code_bench = None
+    state_rank_bench = None
+    state_total_bench = None
+
     bench_data = benchmarker.data  # .data returns a copy (safe to use)
     match = bench_data[bench_data["name"] == selected_institution]
     if not match.empty:
         inst_id = match["inst_id"].values[0]
+        state_code_bench = match["state"].values[0]
         try:
-            bench_gap   = benchmarker.analyze_gap(inst_id)
-            bench_peers = benchmarker.get_peers(inst_id)
-            bench_trend_df, bench_trend_stats = benchmarker.get_peer_trend(
-                inst_id, DATABASE_PATH, start_year, end_year
-            )
+            if custom_peer_mode and custom_peer_inst_ids:
+                bench_gap = benchmarker.analyze_gap_custom(inst_id, custom_peer_inst_ids)
+                # Custom peer names for display (reuse already-fetched bench_data copy)
+                bench_peers = bench_data[
+                    bench_data["inst_id"].isin(custom_peer_inst_ids)
+                ]["name"].tolist()
+                bench_trend_df, bench_trend_stats = benchmarker.get_peer_trend_custom(
+                    inst_id, DATABASE_PATH, custom_peer_inst_ids, start_year, end_year
+                )
+            else:
+                bench_gap   = benchmarker.analyze_gap(inst_id, n=n_peers)
+                bench_peers = benchmarker.get_peers(inst_id, n=n_peers)
+                bench_trend_df, bench_trend_stats = benchmarker.get_peer_trend(
+                    inst_id, DATABASE_PATH, start_year, end_year, n=n_peers
+                )
         except Exception:
             pass  # graceful fallback -- benchmarker sections simply won't render
 
+        # --- State peer benchmarking (KNN-filtered to same state) ---
+        # Uses KNN to find portfolio-similar institutions, then keeps only
+        # those in the same state. This avoids comparing dissimilar schools
+        # just because they share a geography (e.g. UNT vs UT Austin in TX).
+        state_error = None  # captured for display in the UI tab
+        if state_code_bench:
+            try:
+                # State rank (by total_rd) for the KPI card
+                all_state = bench_data[bench_data["state"] == state_code_bench] \
+                    .sort_values("total_rd", ascending=False).reset_index(drop=True)
+                target_idx_state  = all_state[all_state["inst_id"] == inst_id].index
+                state_rank_bench  = int(target_idx_state[0]) + 1 if len(target_idx_state) else None
+                state_total_bench = len(all_state)
+
+                # KNN state peers: search top-100 national neighbors, keep same state
+                state_knn_inst_ids = benchmarker.get_state_knn_inst_ids(
+                    inst_id, state_code_bench, n_state=10, max_candidates=100
+                )
+                state_peer_names = bench_data[
+                    bench_data["inst_id"].isin(state_knn_inst_ids)
+                ]["name"].tolist()
+
+                if state_knn_inst_ids:
+                    state_gap = benchmarker.analyze_gap_custom(inst_id, state_knn_inst_ids)
+                    # Limit trend to 6 peers for chart readability
+                    state_trend_df, state_trend_stats = benchmarker.get_peer_trend_custom(
+                        inst_id, DATABASE_PATH, state_knn_inst_ids[:6], start_year, end_year
+                    )
+            except Exception as _e:
+                state_error = str(_e)   # surfaced in tab_state below
+
+    # --- Strategic Insight (generated after benchmarker so KNN stats are available) ---
+    insight = engine.generate_strategic_insight(
+        selected_institution, start_year, end_year,
+        bench_trend_stats=bench_trend_stats,
+        n_peers=n_peers,
+        custom_peer_mode=custom_peer_mode,
+    )
+
     # --- Strategic Summary ---
     callouts = engine.get_snapshot_callouts(selected_institution, end_year)
-    render_executive_summary(metrics, insight, selected_institution, start_year, end_year, all_charts, callouts)
+    render_executive_summary(
+        metrics, insight, selected_institution, start_year, end_year, all_charts,
+        callouts=callouts,
+        bench_trend_stats=bench_trend_stats,
+        n_peers=n_peers,
+        custom_peer_mode=custom_peer_mode,
+    )
 
     # --- Ranking Over Time ---
     st.subheader("Ranking Over Time")
@@ -593,32 +698,60 @@ def render_snapshot_tab(selected_institution, start_year, end_year, inst_id):
     # --- Unified Peer Analysis ---
     if bench_gap and bench_peers:
         st.subheader("Peer Analysis")
-        st.caption(
-            f"Compared against your {len(bench_peers)} closest national peers "
-            f"(matched across all funding dimensions)"
-        )
+
+        if custom_peer_mode:
+            st.warning(
+                "**Custom peer set active** — these results reflect your manually selected "
+                "institutions, not the algorithmically matched KNN peers. "
+                "Comparisons may not reflect structural funding similarity. "
+                "Growth rank is disabled for custom peer sets."
+            )
+            st.caption(
+                f"Compared against {len(bench_peers)} custom-selected peers"
+            )
+        else:
+            st.caption(
+                f"Compared against your {len(bench_peers)} closest national peers "
+                f"(matched across all funding dimensions)"
+            )
 
         # Growth metric cards
         if bench_trend_stats:
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric(
-                    "Your Growth (CAGR)",
-                    f"{bench_trend_stats['target_cagr']}%",
-                )
-            with c2:
-                st.metric(
-                    "Peer Avg Growth",
-                    f"{bench_trend_stats['peer_avg_cagr']}%",
-                )
-            with c3:
-                st.metric(
-                    "Growth Rank",
-                    f"#{bench_trend_stats['growth_rank']} of {bench_trend_stats['total_in_group']}",
-                )
+            if custom_peer_mode:
+                # Growth Rank is not meaningful for hand-picked peer sets
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.metric(
+                        "Your Growth (CAGR)",
+                        f"{bench_trend_stats['target_cagr']}%",
+                    )
+                with c2:
+                    st.metric(
+                        "Peer Avg Growth (Custom)",
+                        f"{bench_trend_stats['peer_avg_cagr']}%",
+                    )
+            else:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric(
+                        "Your Growth (CAGR)",
+                        f"{bench_trend_stats['target_cagr']}%",
+                    )
+                with c2:
+                    st.metric(
+                        "Peer Avg Growth",
+                        f"{bench_trend_stats['peer_avg_cagr']}%",
+                    )
+                with c3:
+                    st.metric(
+                        "Growth Rank",
+                        f"#{bench_trend_stats['growth_rank']} of {bench_trend_stats['total_in_group']}",
+                    )
 
         # Two views under sub-tabs: Funding Profile | Growth Over Time
-        tab_profile, tab_growth = st.tabs(["Funding Profile", "Growth Over Time"])
+        tab_profile, tab_growth = st.tabs([
+            "Funding Profile", "Growth Over Time"
+        ])
 
         with tab_profile:
             gap_labels = [METRIC_LABELS.get(g["metric"], g["metric"]) for g in bench_gap]
@@ -667,58 +800,151 @@ def render_snapshot_tab(selected_institution, start_year, end_year, inst_id):
                     })
                 st.dataframe(gap_table, use_container_width=True, hide_index=True)
 
+            _peer_label = "custom" if custom_peer_mode else "KNN"
+            with st.expander(f"Who are my {len(bench_peers)} peers? ({_peer_label})"):
+                peer_rows = []
+                for pname in bench_peers:
+                    row = bench_data[bench_data["name"] == pname]
+                    if not row.empty:
+                        peer_rows.append({
+                            "Institution": pname,
+                            "State": row["state"].values[0],
+                            "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                        })
+                st.dataframe(peer_rows, use_container_width=True, hide_index=True)
+                if custom_peer_mode:
+                    st.caption(
+                        "This is your manually selected peer set. "
+                        "Use the 'Custom peer selection' expander above to modify it."
+                    )
+                else:
+                    st.caption(
+                        "Peers are identified relative to your institution's funding "
+                        "profile and may differ when viewed from another institution's "
+                        "perspective."
+                    )
+
         with tab_growth:
             if bench_trend_df is not None and not bench_trend_df.empty:
-                fig_trend = go.Figure()
-                for name in bench_trend_df["name"].unique():
-                    inst_data = bench_trend_df[bench_trend_df["name"] == name]
-                    is_target = bool(inst_data["is_target"].iloc[0])
+                growth_view = st.radio(
+                    "Chart view",
+                    ["Summary (peer band)", "Detail (individual peers)"],
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="growth_view_radio",
+                )
 
-                    fig_trend.add_trace(go.Scatter(
-                        x=inst_data["year"],
-                        y=inst_data["total_rd"],
-                        mode="lines+markers",
-                        name=name if is_target else None,
-                        line=dict(
-                            width=3 if is_target else 1,
-                            color="#2563EB" if is_target else "#9CA3AF",
-                            dash="solid" if is_target else "dot",
-                        ),
-                        marker=dict(size=8 if is_target else 4),
-                        showlegend=is_target,
-                        hovertemplate=f"{name}<br>%{{y:$,.0f}}<extra></extra>",
-                    ))
+                target_trend = bench_trend_df[bench_trend_df["is_target"] == True]
+                peers_trend  = bench_trend_df[bench_trend_df["is_target"] == False]
+                target_name  = target_trend["name"].iloc[0] if not target_trend.empty else selected_institution
+
+                fig_trend = go.Figure()
+
+                if growth_view == "Summary (peer band)":
+                    # --- Peer min/max shaded band ---
+                    if not peers_trend.empty:
+                        peer_stats = (
+                            peers_trend.groupby("year")["total_rd"]
+                            .agg(["mean", "min", "max"])
+                            .reset_index()
+                        )
+                        fig_trend.add_trace(go.Scatter(
+                            x=pd.concat([peer_stats["year"], peer_stats["year"][::-1]]),
+                            y=pd.concat([peer_stats["max"], peer_stats["min"][::-1]]),
+                            fill="toself",
+                            fillcolor="rgba(156,163,175,0.15)",
+                            line=dict(color="rgba(0,0,0,0)"),
+                            name="Peer Range (min–max)",
+                            hoverinfo="skip",
+                        ))
+                        fig_trend.add_trace(go.Scatter(
+                            x=peer_stats["year"],
+                            y=peer_stats["mean"],
+                            mode="lines",
+                            name="Peer Average",
+                            line=dict(color="#9CA3AF", width=2, dash="dash"),
+                            hovertemplate="Peer Avg: %{y:$,.0f}<extra></extra>",
+                        ))
+
+                    # --- Target institution ---
+                    if not target_trend.empty:
+                        fig_trend.add_trace(go.Scatter(
+                            x=target_trend["year"],
+                            y=target_trend["total_rd"],
+                            mode="lines+markers",
+                            name=target_name.split(",")[0],
+                            line=dict(color="#2563EB", width=3),
+                            marker=dict(size=8),
+                            hovertemplate=f"{target_name}<br>%{{y:$,.0f}}<extra></extra>",
+                        ))
+
+                else:  # Detail view — peers hidden in legend, click to show
+                    # Target first (always visible)
+                    if not target_trend.empty:
+                        fig_trend.add_trace(go.Scatter(
+                            x=target_trend["year"],
+                            y=target_trend["total_rd"],
+                            mode="lines+markers",
+                            name=target_name.split(",")[0],
+                            line=dict(color="#2563EB", width=3),
+                            marker=dict(size=8),
+                            hovertemplate=f"{target_name}<br>%{{y:$,.0f}}<extra></extra>",
+                        ))
+                    # Peers — start hidden so chart isn't messy; click legend to reveal
+                    for pname in peers_trend["name"].unique():
+                        inst_data = peers_trend[peers_trend["name"] == pname]
+                        fig_trend.add_trace(go.Scatter(
+                            x=inst_data["year"],
+                            y=inst_data["total_rd"],
+                            mode="lines+markers",
+                            name=pname.split(",")[0],
+                            line=dict(width=1.5, dash="dot"),
+                            marker=dict(size=4),
+                            visible="legendonly",
+                            hovertemplate=f"{pname}<br>%{{y:$,.0f}}<extra></extra>",
+                        ))
 
                 fig_trend.update_layout(
                     xaxis_title="Year",
                     yaxis_title="Total R&D",
-                    height=400,
+                    height=420,
                     hovermode="x unified",
                     plot_bgcolor="white",
                     paper_bgcolor="white",
                     yaxis=dict(tickformat="$,.0s"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 )
+                if growth_view == "Detail (individual peers)":
+                    st.caption(
+                        "Peers are hidden by default — click any name in the legend to show/hide it."
+                    )
                 st.plotly_chart(fig_trend, use_container_width=True)
             else:
                 st.info("Historical trend data is not available.")
 
-        # Peer list -- always visible below both sub-tabs
-        with st.expander(f"Who are my {len(bench_peers)} peers?"):
-            peer_rows = []
-            for pname in bench_peers:
-                row = bench_data[bench_data["name"] == pname]
-                if not row.empty:
-                    peer_rows.append({
-                        "Institution": pname,
-                        "State": row["state"].values[0],
-                        "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
-                    })
-            st.dataframe(peer_rows, use_container_width=True, hide_index=True)
-            st.caption(
-                "Peers are identified relative to your institution's funding "
-                "profile and may differ when viewed from another institution's "
-                "perspective."
-            )
+            _peer_label = "custom" if custom_peer_mode else "KNN"
+            with st.expander(f"Who are my {len(bench_peers)} peers? ({_peer_label})"):
+                peer_rows = []
+                for pname in bench_peers:
+                    row = bench_data[bench_data["name"] == pname]
+                    if not row.empty:
+                        peer_rows.append({
+                            "Institution": pname,
+                            "State": row["state"].values[0],
+                            "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                        })
+                st.dataframe(peer_rows, use_container_width=True, hide_index=True)
+                if custom_peer_mode:
+                    st.caption(
+                        "This is your manually selected peer set. "
+                        "Use the 'Custom peer selection' expander above to modify it."
+                    )
+                else:
+                    st.caption(
+                        "Peers are identified relative to your institution's funding "
+                        "profile and may differ when viewed from another institution's "
+                        "perspective."
+                    )
 
         st.markdown("---")
     else:
@@ -739,6 +965,132 @@ def render_snapshot_tab(selected_institution, start_year, end_year, inst_id):
     state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
     if not state_df.empty:
         render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution, end_year)
+
+    # --- State Peers (KNN-matched within state) ---
+    # Rendered here alongside State Competitive Position for a complete state picture.
+    if state_gap and state_code_bench:
+        short_name = selected_institution.split(",")[0]
+        st.subheader(f"{state_code_bench} Peer Comparison")
+
+        # --- KPI row ---
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            rank_label = f"#{state_rank_bench} of {state_total_bench}" \
+                if state_rank_bench else "N/A"
+            st.metric(f"Rank in {state_code_bench}", rank_label)
+        with sc2:
+            if state_trend_stats:
+                st.metric(
+                    "Your Growth (CAGR)",
+                    f"{state_trend_stats['target_cagr']}%",
+                )
+        with sc3:
+            if state_trend_stats:
+                st.metric(
+                    "State Avg Growth",
+                    f"{state_trend_stats['peer_avg_cagr']}%",
+                )
+
+        # --- Funding profile vs state KNN peer avg ---
+        st.markdown(f"**Funding Profile vs {state_code_bench} KNN Peers**")
+        st.caption(
+            f"Compared against {len(state_peer_names)} portfolio-similar institutions "
+            f"in {state_code_bench} (KNN-matched from top-100 national neighbors). "
+            "Positive = you spend more in this category."
+        )
+
+        s_labels   = [METRIC_LABELS.get(g["metric"], g["metric"]) for g in state_gap]
+        s_my_vals  = [g["my_val"]   for g in state_gap]
+        s_avg_vals = [g["peer_avg"] for g in state_gap]
+
+        fig_state_gap = go.Figure()
+        fig_state_gap.add_trace(go.Bar(
+            y=s_labels, x=s_my_vals, orientation="h",
+            name=short_name,
+            marker_color="#2563EB",
+            text=[fmt_dollars(v) for v in s_my_vals],
+            textposition="outside",
+            textfont=dict(size=12),
+        ))
+        fig_state_gap.add_trace(go.Bar(
+            y=s_labels, x=s_avg_vals, orientation="h",
+            name=f"{state_code_bench} Average",
+            marker_color="#D1D5DB",
+            text=[fmt_dollars(v) for v in s_avg_vals],
+            textposition="outside",
+            textfont=dict(size=12),
+        ))
+        fig_state_gap.update_layout(
+            barmode="group",
+            height=380,
+            margin=dict(l=10, r=100, t=10, b=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            xaxis=dict(title=None, showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
+            yaxis=dict(title=None, autorange="reversed"),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_state_gap, use_container_width=True)
+
+        # --- Growth trend vs top state institutions ---
+        if state_trend_df is not None and not state_trend_df.empty:
+            st.markdown(f"**R&D Growth vs Top {state_code_bench} Institutions**")
+            st.caption("Showing up to 6 largest state institutions by R&D.")
+            fig_state_trend = go.Figure()
+            for sname in state_trend_df["name"].unique():
+                s_inst = state_trend_df[state_trend_df["name"] == sname]
+                is_tgt = bool(s_inst["is_target"].iloc[0])
+                fig_state_trend.add_trace(go.Scatter(
+                    x=s_inst["year"],
+                    y=s_inst["total_rd"],
+                    mode="lines+markers",
+                    name=sname if is_tgt else sname.split(",")[0],
+                    line=dict(
+                        width=3 if is_tgt else 1.5,
+                        color="#2563EB" if is_tgt else None,
+                        dash="solid" if is_tgt else "dot",
+                    ),
+                    marker=dict(size=8 if is_tgt else 4),
+                    hovertemplate=f"{sname}<br>%{{y:$,.0f}}<extra></extra>",
+                ))
+            fig_state_trend.update_layout(
+                xaxis_title="Year",
+                yaxis_title="Total R&D",
+                height=400,
+                hovermode="x unified",
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                yaxis=dict(tickformat="$,.0s"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            )
+            st.plotly_chart(fig_state_trend, use_container_width=True)
+
+        # --- KNN state peers list ---
+        with st.expander(
+            f"Who are my {len(state_peer_names)} {state_code_bench} KNN peers?"
+        ):
+            state_table_rows = []
+            for pname in state_peer_names:
+                row = bench_data[bench_data["name"] == pname]
+                if not row.empty:
+                    state_table_rows.append({
+                        "Institution": pname,
+                        "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                        "Federal":    fmt_dollars(float(row["federal"].values[0])),
+                    })
+            st.dataframe(state_table_rows, use_container_width=True, hide_index=True)
+            st.caption(
+                f"These are the most portfolio-similar institutions to you "
+                f"that are also located in {state_code_bench}, "
+                "identified by searching the top-100 national KNN neighbors."
+            )
+        st.markdown("---")
+    elif state_error:
+        st.warning(
+            f"State peer analysis encountered an error: `{state_error}`. "
+            "Try reloading the page — this can happen if the app cache "
+            "is stale after a code update."
+        )
 
 
 def create_visualization(df, question):
@@ -809,7 +1161,7 @@ FIELD_SHORT_LABELS = {
 # ============================================================
 # Research Portfolio tab
 # ============================================================
-def render_research_portfolio_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids):
+def render_research_portfolio_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids, n_peers: int = 10, custom_peer_mode: bool = False):
     """Field-level analysis: portfolio composition, momentum, and peer comparison."""
 
     portfolio = engine.get_field_portfolio(selected_institution, end_year)
@@ -988,10 +1340,20 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
         field_comp = engine.get_field_peer_comparison(inst_id, peer_inst_ids, end_year)
         if not field_comp.empty:
             st.subheader(f"Portfolio Distinctiveness — FY{end_year}")
-            st.caption(
-                "How your field mix compares to your 10 nearest peers. "
-                "Positive = you invest a larger share than peers."
-            )
+            if custom_peer_mode:
+                st.warning(
+                    "**Custom peer set active** — comparison reflects your manually "
+                    "selected institutions, not algorithmically matched peers."
+                )
+                st.caption(
+                    f"How your field mix compares to your {len(peer_inst_ids)} custom-selected peers. "
+                    "Positive = you invest a larger share than peers."
+                )
+            else:
+                st.caption(
+                    f"How your field mix compares to your {n_peers} nearest peers. "
+                    "Positive = you invest a larger share than peers."
+                )
 
             fc = field_comp.copy()
             fc['label'] = fc['field_code'].map(FIELD_SHORT_LABELS).fillna(fc['field_name'])
@@ -1028,7 +1390,7 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
 # ============================================================
 # Federal Landscape tab
 # ============================================================
-def render_federal_landscape_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids):
+def render_federal_landscape_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids, n_peers: int = 10, custom_peer_mode: bool = False):
     """Agency-level federal funding analysis: breakdown, trends, positioning."""
 
     agencies = engine.get_agency_breakdown(selected_institution, end_year)
@@ -1162,10 +1524,20 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
         agency_comp = engine.get_agency_peer_comparison(inst_id, peer_inst_ids, end_year)
         if not agency_comp.empty:
             st.subheader(f"Agency Distinctiveness — FY{end_year}")
-            st.caption(
-                "How your federal agency mix compares to your 10 nearest peers. "
-                "Positive = you rely more on this agency than peers do."
-            )
+            if custom_peer_mode:
+                st.warning(
+                    "**Custom peer set active** — comparison reflects your manually "
+                    "selected institutions, not algorithmically matched peers."
+                )
+                st.caption(
+                    f"How your federal agency mix compares to your {len(peer_inst_ids)} custom-selected peers. "
+                    "Positive = you rely more on this agency than peers do."
+                )
+            else:
+                st.caption(
+                    f"How your federal agency mix compares to your {n_peers} nearest peers. "
+                    "Positive = you rely more on this agency than peers do."
+                )
 
             ac = agency_comp.sort_values('difference')
             colors = ['#2563EB' if d >= 0 else '#93C5FD' for d in ac['difference']]
@@ -1428,7 +1800,7 @@ user_institution = st.session_state.get('user_institution')
 if user_institution and user_institution in institution_list:
     default_idx = institution_list.index(user_institution)
 
-col_pick, col_window = st.columns([2, 1])
+col_pick, col_window, col_peers = st.columns([2, 1, 1])
 with col_pick:
     selected_institution = st.selectbox(
         "Pick an institution",
@@ -1436,36 +1808,126 @@ with col_pick:
         index=default_idx,
     )
 with col_window:
+    min_year = engine.get_min_year()
     time_window = st.selectbox(
         "Time window",
         options=[
             f"5-Year ({max_year - 5}–{max_year})",
             f"10-Year ({max_year - 10}–{max_year})",
+            "Custom Range…",
         ],
         index=0
     )
+with col_peers:
+    n_peers_selected = st.selectbox(
+        "Peer group size",
+        options=[10, 20],
+        index=0,
+        format_func=lambda x: f"{x} peers",
+    )
+
+# Custom range expander (shown only when "Custom Range…" is selected)
+if time_window == "Custom Range…":
+    with st.expander("Select custom year range", expanded=True):
+        cr_col1, cr_col2 = st.columns(2)
+        with cr_col1:
+            custom_start = st.number_input(
+                "Start year",
+                min_value=min_year,
+                max_value=max_year - 1,
+                value=max_year - 5,
+                step=1,
+                key="custom_start_year",
+            )
+        with cr_col2:
+            custom_end = st.number_input(
+                "End year",
+                min_value=min_year + 1,
+                max_value=max_year,
+                value=max_year,
+                step=1,
+                key="custom_end_year",
+            )
+        # Guard: ensure start < end
+        if custom_start >= custom_end:
+            st.warning("Start year must be earlier than end year.")
+            custom_start = custom_end - 1
+    start_year = int(custom_start)
+    end_year = int(custom_end)
+elif "5-Year" in time_window:
+    start_year = max_year - 5
+    end_year = max_year
+else:
+    start_year = max_year - 10
+    end_year = max_year
 
 # Track what institution is currently being viewed (for logging)
 st.session_state['current_viewing'] = selected_institution or ''
 
-start_year = max_year - 5 if "5-Year" in time_window else max_year - 10
-end_year = max_year
+# -----------------------------------------------------------------------
+# Custom peer selection (optional, session-scoped override of KNN peers)
+# -----------------------------------------------------------------------
+custom_peer_options = [i for i in institution_list if i != selected_institution]
+
+# Two-run clear pattern:
+# The "Clear" button cannot modify the multiselect widget key in the same
+# run it was rendered (Streamlit forbids it). Instead the button sets a
+# pending flag and reruns; on the next run this block fires BEFORE the
+# widget is instantiated, which is the only moment the key can be set.
+if st.session_state.get('_clear_peers_pending'):
+    st.session_state['custom_peers_multiselect'] = []
+    del st.session_state['_clear_peers_pending']
+
+# Remove stale selections when the selected institution changes.
+# This must also run before the widget is instantiated.
+st.session_state['custom_peers_multiselect'] = [
+    p for p in st.session_state['custom_peers_multiselect']
+    if p in custom_peer_options
+]
+
+with st.expander("Custom peer selection (optional)", expanded=False):
+    st.caption(
+        "Override the algorithmic (KNN) peer group with your own selection. "
+        "Custom peers are session-only and not saved on refresh."
+    )
+    selected_custom_peers = st.multiselect(
+        "Select comparison institutions",
+        options=custom_peer_options,
+        placeholder="Leave empty to use automatic KNN peers…",
+        key="custom_peers_multiselect",
+    )
+    if selected_custom_peers:
+        if st.button("Clear custom peers", type="secondary", key="clear_custom_peers"):
+            # Set flag, rerun — the key is cleared at the top of the next run
+            st.session_state['_clear_peers_pending'] = True
+            st.rerun()
+
+# Determine whether custom mode is active (driven entirely by the widget key)
+custom_peer_mode = bool(st.session_state['custom_peers_multiselect'])
 
 # Resolve inst_id and peer_inst_ids for the selected institution
 inst_id = None
 peer_inst_ids = []
+custom_peer_inst_ids = []   # inst_ids for the user-chosen schools
 state_code = None
 
+bench_data = benchmarker.data
 if selected_institution:
-    bench_data = benchmarker.data
     match = bench_data[bench_data["name"] == selected_institution]
     if not match.empty:
         inst_id = match["inst_id"].values[0]
         state_code = match["state"].values[0]
-        try:
-            peer_inst_ids = benchmarker.get_peer_inst_ids(inst_id)
-        except Exception:
-            peer_inst_ids = []
+
+        if custom_peer_mode:
+            # Resolve custom peer names → inst_ids using the benchmarker's fitted data
+            custom_rows = bench_data[bench_data["name"].isin(st.session_state['custom_peers_multiselect'])]
+            custom_peer_inst_ids = custom_rows["inst_id"].tolist()
+            peer_inst_ids = custom_peer_inst_ids
+        else:
+            try:
+                peer_inst_ids = benchmarker.get_peer_inst_ids(inst_id, n=n_peers_selected)
+            except Exception:
+                peer_inst_ids = []
 
 # --- Four tabs ---
 tab_snapshot, tab_portfolio, tab_federal, tab_qa = st.tabs([
@@ -1477,19 +1939,32 @@ tab_snapshot, tab_portfolio, tab_federal, tab_qa = st.tabs([
 
 with tab_snapshot:
     if selected_institution:
-        render_snapshot_tab(selected_institution, start_year, end_year, inst_id)
+        render_snapshot_tab(
+            selected_institution, start_year, end_year, inst_id,
+            n_peers=n_peers_selected,
+            custom_peer_mode=custom_peer_mode,
+            custom_peer_inst_ids=custom_peer_inst_ids,
+        )
     else:
         st.info("Select an institution above to view their R&D funding snapshot.")
 
 with tab_portfolio:
     if selected_institution:
-        render_research_portfolio_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids)
+        render_research_portfolio_tab(
+            selected_institution, start_year, end_year, inst_id, peer_inst_ids,
+            n_peers=n_peers_selected,
+            custom_peer_mode=custom_peer_mode,
+        )
     else:
         st.info("Select an institution above to explore their research portfolio.")
 
 with tab_federal:
     if selected_institution:
-        render_federal_landscape_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids)
+        render_federal_landscape_tab(
+            selected_institution, start_year, end_year, inst_id, peer_inst_ids,
+            n_peers=n_peers_selected,
+            custom_peer_mode=custom_peer_mode,
+        )
     else:
         st.info("Select an institution above to analyze their federal funding landscape.")
 
