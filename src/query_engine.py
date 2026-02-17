@@ -415,6 +415,11 @@ class HERDQueryEngine:
             "SELECT MAX(year) as max_year FROM institutions"
         )['max_year'].iloc[0])
 
+    def get_min_year(self):
+        return int(self._query(
+            "SELECT MIN(year) as min_year FROM institutions"
+        )['min_year'].iloc[0])
+
     # ----------------------------------------------------------
     # Name resolution: abbreviations/nicknames → inst_id
     # ----------------------------------------------------------
@@ -895,7 +900,21 @@ Summary:"""
 
         return state_df, rank, market_share, state
 
-    def generate_strategic_insight(self, institution_name, start_year=2019, end_year=2024):
+    def generate_strategic_insight(
+        self,
+        institution_name,
+        start_year=2019,
+        end_year=2024,
+        bench_trend_stats=None,
+        n_peers=None,
+        custom_peer_mode=False,
+    ):
+        """Generate a strategic insight paragraph for the institution.
+
+        ``bench_trend_stats`` — if provided (from KNN/custom benchmarker), its
+        CAGR figures are used instead of the legacy resource-parity peer set so
+        the insight is consistent with the Peer Analysis section on the page.
+        """
         rank_df = self.get_rank_trend(institution_name, start_year, end_year)
         if rank_df.empty:
             return "Insufficient data for analysis."
@@ -903,7 +922,6 @@ Summary:"""
         current_rank = int(rank_df.iloc[-1]['national_rank'])
         start_rank = int(rank_df.iloc[0]['national_rank'])
 
-        _, peer_stats = self.get_peer_comparison(institution_name, start_year, end_year)
         _, trend_df, national_median = self.get_funding_breakdown(institution_name, start_year, end_year)
         state_df, state_rank, _, state = self.get_state_ranking(institution_name, end_year, start_year)
 
@@ -922,11 +940,29 @@ Summary:"""
             top_agency = agencies.iloc[0]
             agency_context = f"- Top federal agency: {top_agency['agency_name']} ({top_agency['pct_of_federal']}% of federal)"
 
+        # Use KNN/custom bench stats when available so the insight matches
+        # what is shown in the Peer Analysis section.  Fall back to the legacy
+        # resource-parity peer set only when no benchmarker data exists.
+        if bench_trend_stats:
+            target_growth = bench_trend_stats.get('target_cagr', 0)
+            peer_avg      = bench_trend_stats.get('peer_avg_cagr', 0)
+            if custom_peer_mode:
+                peer_desc = "custom peer avg"
+            elif n_peers:
+                peer_desc = f"{n_peers}-peer KNN avg"
+            else:
+                peer_desc = "KNN peer avg"
+        else:
+            _, peer_stats = self.get_peer_comparison(institution_name, start_year, end_year)
+            target_growth = peer_stats.get('target_growth', 0)
+            peer_avg      = peer_stats.get('peer_avg', 0)
+            peer_desc     = "peer avg"
+
         prompt = f"""You are a senior research strategy analyst writing a briefing for a Vice President of Research. Write ONE concise paragraph (2-3 sentences, max 50 words) summarizing this institution's competitive position.
 
 Data:
 - Rank: #{current_rank} nationally (was #{start_rank} in {start_year})
-- Growth: {peer_stats.get('target_growth', 0)}% vs peer avg {peer_stats.get('peer_avg', 0)}%
+- Growth (CAGR): {target_growth}% vs {peer_desc} {peer_avg}%
 - Federal share: {federal_pct}% (national median: {national_median}%)
 - State rank: #{state_rank} in {state}
 {field_context}
@@ -936,7 +972,8 @@ Rules:
 - Use comparative positioning, not judgments. Say "ranked Nth" not "high risk."
 - Never use words like risk, warning, concern, vulnerable, or should.
 - State patterns and comparisons. Let the reader draw conclusions.
-- Be specific with numbers. No filler."""
+- Be specific with numbers. No filler.
+- The growth comparison MUST reflect the actual numbers above. If target growth is below the peer avg, do NOT say it exceeds peers."""
 
         response = self.client.models.generate_content(
             model='gemini-2.5-flash',
@@ -1425,7 +1462,7 @@ Rules:
                     <div class="metric-value">${metrics['current_rd']:,.0f}</div>
                 </div>
                 <div class="metric">
-                    <div class="metric-label">5-Year Growth</div>
+                    <div class="metric-label">{end_year - start_year}-Year Growth ({start_year}–{end_year})</div>
                     <div class="metric-value">{metrics['target_growth']}%</div>
                 </div>
             </div>
