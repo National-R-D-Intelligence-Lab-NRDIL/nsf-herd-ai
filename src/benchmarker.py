@@ -162,6 +162,17 @@ class AutoBenchmarker:
         peer_indices = self._peer_indices(target_inst_id)
         return self._data.loc[peer_indices, "name"].tolist()
 
+    def get_peer_inst_ids(self, target_inst_id: str) -> list[str]:
+        """Return the n_peers nearest institution inst_ids.
+
+        Used by the Research Portfolio and Federal Landscape tabs to JOIN
+        peer inst_ids against field_expenditures and agency_funding tables.
+        Same peers as get_peers(), just returning IDs instead of names.
+        """
+        self._check_fitted()
+        peer_indices = self._peer_indices(target_inst_id)
+        return self._data.loc[peer_indices, "inst_id"].tolist()
+
     # ------------------------------------------------------------------
     # analyze_gap
     # ------------------------------------------------------------------
