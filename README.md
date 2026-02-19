@@ -2,7 +2,7 @@
 
 Strategic analytics dashboard for university R&D funding data. Transforms the NSF HERD Survey (1,004 institutions, 2010–2024) into competitive intelligence for Vice Presidents of Research and research administrators.
 
-**Four core capabilities**: Institution Snapshot (competitive positioning), Research Portfolio (field-level analysis), Federal Landscape (agency funding analysis), and natural language Q&A (SQL-powered research queries).
+**Four core capabilities**: Institution Snapshot (competitive positioning, peer analysis, and state peer comparison), Research Portfolio (field-level analysis), Federal Landscape (agency funding analysis), and natural language Q&A (SQL-powered research queries).
 
 ---
 
@@ -47,15 +47,16 @@ Select any institution and time window (5-year or 10-year) to get:
 
 **Where You Sit Nationally** – Anchor view placing your institution on a bar chart alongside benchmark positions (#1, #10, #50, #100, #250, etc.) so you can see where you sit relative to the full landscape. Your institution is highlighted in blue.
 
-**Peer Analysis** – Uses K-Nearest Neighbors to find your 10 most similar institutions nationally across 7 funding dimensions (total R&D, federal, state/local, business, nonprofit, institutional, other). Shows:
-- Growth metrics: Your CAGR, peer average CAGR, your growth rank
-- Funding Profile: Grouped bar chart comparing your funding mix vs peer averages
-- Growth Over Time: Line chart showing your trajectory vs your 10 peers
-- Detailed gap numbers in an expander
+**Peer Analysis** – Uses K-Nearest Neighbors to find your most similar institutions nationally across 7 funding dimensions (total R&D, federal, state/local, business, nonprofit, institutional, other). Shows growth metrics (your CAGR, peer average CAGR, your growth rank) plus two sub-tabs:
+
+- *Funding Profile*: Grouped bar chart comparing your funding mix vs peer averages, with a detailed gap numbers expander and a peer list expander.
+- *Growth Over Time*: Two view modes — **Summary** (your institution + shaded peer min/max band + peer average line, clean at any peer count) and **Detail** (all individual peer lines, hidden by default in the legend so you can toggle each one on/off interactively). Includes a peer list expander.
 
 **Funding Source Analysis** – Pie chart of current funding sources plus a federal share trend line plotted against the national median.
 
 **State Competitive Position** – Your state rank and market share. Shows your competitive band (3 institutions above and 3 below you in state rank with federal dependency percentages). Top 10 state leaderboard available in an expander.
+
+**State Peer Comparison** – KNN peers filtered to your state, rendered alongside State Competitive Position for a complete state picture. Shows your rank within the state peer group and CAGR vs state peer average, a grouped bar chart comparing your funding mix to portfolio-similar in-state institutions, an R&D growth trend vs the top institutions in your state, and a state KNN peer list expander.
 
 ### Tab 2: Research Portfolio
 
