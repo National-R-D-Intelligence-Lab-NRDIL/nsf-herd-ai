@@ -416,9 +416,7 @@ class HERDQueryEngine:
         )['max_year'].iloc[0])
 
     def get_min_year(self):
-        return int(self._query(
-            "SELECT MIN(year) as min_year FROM institutions"
-        )['min_year'].iloc[0])
+        return 2010
 
     # ----------------------------------------------------------
     # Name resolution: abbreviations/nicknames → inst_id
