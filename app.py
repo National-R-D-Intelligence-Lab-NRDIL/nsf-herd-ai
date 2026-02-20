@@ -168,7 +168,7 @@ def _benchmarker_version() -> str:
 @st.cache_resource(show_spinner="Loading benchmarking model...")
 def load_benchmarker(_version: str = ""):   # _version param busts the cache on code changes
     df = fetch_university_features(DATABASE_PATH)
-    bench = AutoBenchmarker(n_peers=20)
+    bench = AutoBenchmarker(n_peers=10)
     bench.fit(df)
     return bench
 
@@ -450,25 +450,6 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
         display_df = display_df[['state_rank', 'name', 'total_rd', 'cagr']]
         display_df.columns = ['Rank', 'Institution', f'{end_year} R&D', '5-Yr CAGR']
         st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    
-    display_df = state_df.head(10).copy()
-    display_df['total_rd'] = display_df['total_rd'].apply(lambda x: fmt_dollars(x))
-    display_df['cagr'] = display_df['cagr'].apply(lambda x: f"{x}%" if x == x else "N/A")
-    display_df = display_df[['state_rank', 'name', 'total_rd', 'cagr']]
-    display_df.columns = ['Rank', 'Institution', '2024 R&D', '5-Yr CAGR']
-    
-    def highlight_target(row):
-        return ['background-color: #EFF6FF' if row['Institution'] == selected_institution else '' for _ in row]
-    
-    st.dataframe(
-        display_df.style.apply(highlight_target, axis=1),
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    st.caption(f"Top 10 institutions in {state_name} by R&D expenditure")
-    st.markdown("---")
 
 def render_snapshot_tab(
     selected_institution, start_year, end_year, inst_id,
@@ -900,7 +881,6 @@ def render_snapshot_tab(
                             name=pname.split(",")[0],
                             line=dict(width=1.5, dash="dot"),
                             marker=dict(size=4),
-                            visible="legendonly",
                             hovertemplate=f"{pname}<br>%{{y:$,.0f}}<extra></extra>",
                         ))
 
@@ -914,10 +894,6 @@ def render_snapshot_tab(
                     yaxis=dict(tickformat="$,.0s"),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 )
-                if growth_view == "Detail (individual peers)":
-                    st.caption(
-                        "Peers are hidden by default — click any name in the legend to show/hide it."
-                    )
                 st.plotly_chart(fig_trend, use_container_width=True)
             else:
                 st.info("Historical trend data is not available.")
@@ -964,7 +940,8 @@ def render_snapshot_tab(
     # --- State Competitive Position ---
     state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
     if not state_df.empty:
-        render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution, end_year)
+        with st.expander("State Competitive Position", expanded=False):
+            render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution, end_year)
 
     # --- State Peers (KNN-matched within state) ---
     # Rendered here alongside State Competitive Position for a complete state picture.
@@ -1104,23 +1081,31 @@ def create_visualization(df, question):
     if not numeric_cols:
         return None
 
+    # Filter out reference/baseline columns (constant value across all rows —
+    # e.g. unt_cagr=9.6% on every row). These are useful in the table but
+    # produce misleading flat charts.
+    reference_cols = {c for c in numeric_cols if df[c].nunique() <= 1}
+    primary_cols = [c for c in numeric_cols if c not in reference_cols]
+    if not primary_cols:
+        primary_cols = numeric_cols  # fallback if all columns happen to be constant
+
     question_lower = question.lower()
 
     # Figure out which column is the most relevant y-axis
-    if any(w in question_lower for w in ['growth', 'cagr', 'rate', 'fastest']):
-        candidates = [c for c in numeric_cols if any(k in c.lower() for k in ['cagr', 'growth', 'pct'])]
-        y_col = candidates[0] if candidates else numeric_cols[-1]
+    if any(w in question_lower for w in ['growth', 'cagr', 'rate', 'fastest', 'grew', 'faster']):
+        candidates = [c for c in primary_cols if any(k in c.lower() for k in ['cagr', 'growth', 'pct'])]
+        y_col = candidates[0] if candidates else primary_cols[-1]
 
     elif any(w in question_lower for w in ['federal', 'institutional', 'business', 'nonprofit', 'funding source']):
-        candidates = [c for c in numeric_cols if any(k in c.lower() for k in ['federal', 'institutional', 'business', 'state', 'nonprofit'])]
-        y_col = candidates[0] if candidates else numeric_cols[0]
+        candidates = [c for c in primary_cols if any(k in c.lower() for k in ['federal', 'institutional', 'business', 'state', 'nonprofit'])]
+        y_col = candidates[0] if candidates else primary_cols[0]
 
     elif any(w in question_lower for w in ['total', 'compare', 'top', 'rank']):
-        candidates = [c for c in numeric_cols if 'total' in c.lower() or c == 'total_rd']
-        y_col = candidates[-1] if candidates else numeric_cols[-1]
+        candidates = [c for c in primary_cols if 'total' in c.lower() or c == 'total_rd']
+        y_col = candidates[-1] if candidates else primary_cols[-1]
 
     else:
-        y_col = numeric_cols[-1]
+        y_col = primary_cols[-1]
 
     # Time series → line chart
     if has_year and len(df) > 1 and df['year'].nunique() > 1:
@@ -1163,6 +1148,9 @@ FIELD_SHORT_LABELS = {
 # ============================================================
 def render_research_portfolio_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids, n_peers: int = 10, custom_peer_mode: bool = False):
     """Field-level analysis: portfolio composition, momentum, and peer comparison."""
+
+    if custom_peer_mode:
+        st.warning(f"🔧 Custom peer mode — {len(peer_inst_ids)} institutions selected.")
 
     portfolio = engine.get_field_portfolio(selected_institution, end_year)
     if portfolio.empty:
@@ -1393,6 +1381,9 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
 def render_federal_landscape_tab(selected_institution, start_year, end_year, inst_id, peer_inst_ids, n_peers: int = 10, custom_peer_mode: bool = False):
     """Agency-level federal funding analysis: breakdown, trends, positioning."""
 
+    if custom_peer_mode:
+        st.warning(f"🔧 Custom peer mode — {len(peer_inst_ids)} institutions selected.")
+
     agencies = engine.get_agency_breakdown(selected_institution, end_year)
     if agencies.empty:
         st.info(
@@ -1584,6 +1575,9 @@ def render_qa_tab(selected_institution=None, state_code=None, start_year=2019, e
 
     enable_viz = st.session_state.enable_viz
 
+    st.info("Ask questions about R&D funding across 1,004 universities. "
+            "I'll query the database and show you the results.")
+
     # --- Suggested Questions ---
     if selected_institution:
         short_name = selected_institution.split(',')[0]
@@ -1593,19 +1587,19 @@ def render_qa_tab(selected_institution=None, state_code=None, start_year=2019, e
 
         q_groups = {
             "How do we compare?": [
-                f"Which peer institutions have a larger engineering portfolio share than {short_name} in {end_year}?",
-                f"How does {short_name}'s life sciences R&D compare to other {state_label} schools in {end_year}?",
-                f"Which institutions in {state_label} grew their total R&D faster than {short_name} from {start_year} to {end_year}?",
+                "Who beats us in engineering?",
+                f"How does our life sciences R&D compare to other {state_label} schools?",
+                f"Which {state_label} schools grew faster than us?",
             ],
             "Where's the momentum?": [
-                f"What are the fastest growing sub-fields at {short_name} from {start_year} to {end_year}?",
-                f"Which agencies increased their funding to {short_name} the most from {start_year} to {end_year}?",
-                f"How has {short_name}'s federal vs institutional funding balance shifted from {start_year} to {end_year}?",
+                "What are our fastest growing sub-fields?",
+                "Which agencies increased their funding to us the most?",
+                "How has our federal vs institutional funding shifted?",
             ],
             "What's distinctive?": [
-                f"What makes {short_name}'s research portfolio different from its peers in {end_year}?",
-                f"Which fields does {short_name} invest in more heavily than similar institutions in {end_year}?",
-                f"How concentrated is {short_name}'s federal funding compared to other universities in {end_year}?",
+                "What makes our research portfolio different from peers?",
+                "Which fields do we invest in more than similar institutions?",
+                "How concentrated is our federal funding compared to others?",
             ],
         }
 
@@ -1687,7 +1681,18 @@ def process_question(question, enable_viz=True):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                sql, results, summary = engine.ask(question)
+                qa_context = None
+                sel_inst_id = st.session_state.get('_qa_inst_id')
+                if sel_inst_id:
+                    qa_context = {
+                        'institution_name': st.session_state.get('current_viewing', ''),
+                        'inst_id': sel_inst_id,
+                        'state': st.session_state.get('_qa_state_code'),
+                        'start_year': st.session_state.get('_qa_start_year'),
+                        'end_year': st.session_state.get('_qa_end_year'),
+                        'peer_inst_ids': st.session_state.get('_qa_peer_inst_ids', []),
+                    }
+                sql, results, summary = engine.ask(question, context=qa_context)
                 viewing = st.session_state.get('current_viewing', '')
                 log_to_sheets(st.session_state.username, question, sql, viewing)
 
@@ -1819,12 +1824,25 @@ with col_window:
         index=0
     )
 with col_peers:
-    n_peers_selected = st.selectbox(
+    _peer_choice = st.selectbox(
         "Peer group size",
-        options=[10, 20],
+        options=["10 peers (default)", "Custom…"],
         index=0,
-        format_func=lambda x: f"{x} peers",
     )
+
+if _peer_choice == "Custom…":
+    with st.expander("Select peer group size", expanded=True):
+        n_peers_selected = st.number_input(
+            "Number of peers",
+            min_value=1,
+            max_value=10,
+            value=10,
+            step=1,
+            key="custom_n_peers",
+        )
+    n_peers_selected = int(n_peers_selected)
+else:
+    n_peers_selected = 10
 
 # Custom range expander (shown only when "Custom Range…" is selected)
 if time_window == "Custom Range…":
@@ -1848,6 +1866,7 @@ if time_window == "Custom Range…":
                 step=1,
                 key="custom_end_year",
             )
+        st.caption("Some sub-fields were added in 2016. Ranges starting before 2016 may show incomplete field data.")
         # Guard: ensure start < end
         if custom_start >= custom_end:
             st.warning("Start year must be earlier than end year.")
@@ -1928,6 +1947,13 @@ if selected_institution:
                 peer_inst_ids = benchmarker.get_peer_inst_ids(inst_id, n=n_peers_selected)
             except Exception:
                 peer_inst_ids = []
+
+# Store resolved context for the Q&A tab so engine.ask() gets precise identifiers.
+st.session_state['_qa_inst_id']       = inst_id
+st.session_state['_qa_state_code']    = state_code
+st.session_state['_qa_start_year']    = start_year
+st.session_state['_qa_end_year']      = end_year
+st.session_state['_qa_peer_inst_ids'] = peer_inst_ids
 
 # --- Four tabs ---
 tab_snapshot, tab_portfolio, tab_federal, tab_qa = st.tabs([
