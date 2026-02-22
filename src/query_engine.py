@@ -95,6 +95,34 @@ Note: Missing field rows = $0 (institutions only report active fields).
   DOD, DOE, HHS, NASA, NSF, USDA, 'Other agencies'
   Note: HHS includes NIH. The survey does not break out NIH separately.
 
+=== COMMON ALIASES ===
+Users may use casual names. Map them to the correct codes:
+
+Field aliases:
+  "biomedical engineering", "BME", "biomed eng" → field_code = 'eng_biomedical'
+  "comp sci", "CS", "computer science" → field_code = 'cs'
+  "econ", "economics" → field_code = 'soc_economics'
+  "poli sci", "political science" → field_code = 'soc_political'
+  "physics" → field_code = 'phys_physics'
+  "chemistry", "chem" → field_code = 'phys_chemistry'
+  "astronomy", "astro" → field_code = 'phys_astronomy'
+  "bio", "biology" → field_code = 'life_sciences' (parent) or check sub-fields
+  "ag", "agriculture" → field_code = 'life_agricultural'
+  "health sciences" → field_code = 'life_health'
+  "non-science", "non-S&E", "humanities" → field_code = 'non_se' (parent) or 'nse_humanities'
+  "materials", "materials science" → field_code = 'phys_materials' (available from 2016 only)
+
+Agency aliases:
+  "NIH", "National Institutes of Health" → agency_code = 'HHS' (NIH is part of HHS)
+  "Pentagon", "military", "defense" → agency_code = 'DOD'
+  "energy" → agency_code = 'DOE'
+  "agriculture" → agency_code = 'USDA'
+  "space" → agency_code = 'NASA'
+
+=== SUB-FIELDS ADDED IN 2016 ===
+These 4 sub-fields have NO DATA before 2016. Never compute CAGR with start year before 2016:
+  eng_industrial, life_natural_resources, phys_materials, soc_anthropology
+
 === CRITICAL NAME MATCHING RULES ===
 
 Institution names are INCONSISTENT across years. 259 institutions changed
@@ -295,6 +323,63 @@ WHERE year = 2024
 GROUP BY state
 ORDER BY total_state_rd DESC
 LIMIT 15;
+
+Q: "Where do we rank in engineering?" (context: inst_id='003594', state='TX')
+-- COMPETITIVE BAND: rank by the specific metric, show ~8 above and ~7 below.
+-- Include the selected institution IN the results with is_selected = 1.
+-- Do NOT compare against all institutions — just the competitive neighborhood.
+SQL:
+WITH latest_names AS (
+    SELECT inst_id, name FROM institutions
+    WHERE year = (SELECT MAX(year) FROM institutions)
+),
+eng_ranked AS (
+    SELECT fe.inst_id, fe.total as engineering_rd,
+           RANK() OVER (ORDER BY fe.total DESC) as eng_rank,
+           COUNT(*) OVER () as total_institutions
+    FROM field_expenditures fe
+    WHERE fe.year = 2024 AND fe.field_code = 'engineering'
+      AND fe.total > 0
+),
+target AS (SELECT eng_rank FROM eng_ranked WHERE inst_id = '003594')
+SELECT ln.name, er.engineering_rd, er.eng_rank,
+       er.total_institutions,
+       CASE WHEN er.inst_id = '003594' THEN 1 ELSE 0 END as is_selected
+FROM eng_ranked er
+JOIN latest_names ln ON er.inst_id = ln.inst_id
+WHERE er.eng_rank BETWEEN (SELECT eng_rank FROM target) - 8
+                       AND (SELECT eng_rank FROM target) + 7
+ORDER BY er.eng_rank ASC;
+
+Q: "Which Texas schools get more NSF funding than us but have lower total R&D?"
+-- Cross-cutting query: joins institutions + agency_funding with two directional filters.
+-- This is the kind of question the Q&A tab is designed for — no single tab can answer it.
+Context: inst_id='003594', state='TX'
+SQL:
+WITH latest_names AS (
+    SELECT inst_id, name FROM institutions
+    WHERE year = (SELECT MAX(year) FROM institutions)
+),
+unt_vals AS (
+    SELECT i.total_rd,
+           (SELECT amount FROM agency_funding
+            WHERE inst_id = '003594' AND year = 2024 AND agency_code = 'NSF') as nsf_amount
+    FROM institutions i
+    WHERE i.inst_id = '003594' AND i.year = 2024
+)
+SELECT ln.name, i.total_rd, af.amount as nsf_funding,
+       ROUND(af.amount * 100.0 / NULLIF(i.federal, 0), 1) as nsf_pct_of_federal,
+       (SELECT total_rd FROM unt_vals) as unt_total_rd,
+       (SELECT nsf_amount FROM unt_vals) as unt_nsf_funding,
+       CASE WHEN i.inst_id = '003594' THEN 1 ELSE 0 END as is_selected
+FROM institutions i
+JOIN agency_funding af ON i.inst_id = af.inst_id AND i.year = af.year
+JOIN latest_names ln ON i.inst_id = ln.inst_id
+WHERE i.year = 2024 AND i.state = 'TX'
+  AND af.agency_code = 'NSF'
+  AND af.amount > (SELECT nsf_amount FROM unt_vals)
+  AND i.total_rd < (SELECT total_rd FROM unt_vals)
+ORDER BY af.amount DESC;
 """
 
 
@@ -495,6 +580,36 @@ class HERDQueryEngine:
         lines.append("'our', 'we', or uses the selected institution's name/abbreviation,")
         lines.append(f"ALWAYS filter by inst_id = '{context.get('inst_id', '')}' instead of using name LIKE.")
         lines.append(f"When the question says 'peers', use the peer_inst_ids listed above.")
+        lines.append("")
+        lines.append("COMPARATIVE QUESTIONS ('who beats us', 'who's ahead', 'how do we compare',")
+        lines.append("'who has more', 'who outperforms us', 'where do we rank'):")
+        lines.append("  - NEVER compare against all institutions nationally — that produces")
+        lines.append("    obvious, unhelpful results (e.g. Johns Hopkins beats everyone).")
+        lines.append("  - If the question mentions a state or 'in-state', filter to that state.")
+        lines.append("  - If the question mentions 'peers', filter to peer_inst_ids.")
+        lines.append("  - Otherwise, use a COMPETITIVE BAND: rank all institutions by the")
+        lines.append("    SPECIFIC METRIC in the question (e.g. engineering R&D, NSF funding,")
+        lines.append("    life sciences growth), find the selected institution's rank, then")
+        lines.append("    show ~8 institutions above and ~7 below. This gives the VPR their")
+        lines.append("    realistic competitive neighborhood for that metric.")
+        lines.append("  - Always include the selected institution IN the results so the VPR")
+        lines.append("    sees exactly where they sit. Add a column:")
+        lines.append(f"    CASE WHEN inst_id = '{context.get('inst_id', '')}' THEN 1 ELSE 0 END as is_selected")
+        lines.append("  - Always include the institution's rank and the total count in results.")
+        lines.append("")
+        lines.append("GROWTH / CAGR QUERIES:")
+        lines.append("  - Always include start and end dollar amounts alongside the CAGR percentage.")
+        lines.append("  - Filter out institutions with less than $1M in the starting year to exclude noise.")
+        lines.append("  - For sub-fields eng_industrial, life_natural_resources, phys_materials,")
+        lines.append("    soc_anthropology: earliest valid year is 2016. Do not use earlier start years.")
+        lines.append("")
+        lines.append("AVOID REDUNDANCY WITH DASHBOARD TABS:")
+        lines.append("  - The dashboard already shows: national rank (by total R&D), KNN peer")
+        lines.append("    comparison, state ranking, field portfolio breakdown, agency donut chart.")
+        lines.append("  - If the user asks for something a tab already shows, give a brief answer")
+        lines.append("    but note: 'See the [tab name] tab for the full interactive view.'")
+        lines.append("  - The Q&A tab's value is TARGETED EXPLORATION: discipline-specific rankings,")
+        lines.append("    cross-table queries, custom filters, and comparisons the tabs can't do.")
 
         return "\n".join(lines)
 
@@ -527,6 +642,63 @@ class HERDQueryEngine:
         if sql and not sql.endswith(';'):
             sql += ';'
         return sql
+
+    # Valid codes for deterministic validation of LLM-generated SQL
+    VALID_FIELD_CODES = {
+        # Parents
+        'cs', 'engineering', 'geosciences', 'life_sciences', 'math',
+        'physical_sciences', 'psychology', 'social_sciences', 'other_sciences', 'non_se',
+        # Engineering sub-fields
+        'eng_aerospace', 'eng_biomedical', 'eng_chemical', 'eng_civil',
+        'eng_electrical', 'eng_industrial', 'eng_mechanical', 'eng_materials', 'eng_other',
+        # Life Sciences sub-fields
+        'life_agricultural', 'life_biomedical', 'life_health',
+        'life_natural_resources', 'life_other',
+        # Physical Sciences sub-fields
+        'phys_astronomy', 'phys_chemistry', 'phys_materials', 'phys_physics', 'phys_other',
+        # Social Sciences sub-fields
+        'soc_anthropology', 'soc_economics', 'soc_political', 'soc_sociology', 'soc_other',
+        # Non-S&E sub-fields
+        'nse_business', 'nse_communication', 'nse_education', 'nse_humanities',
+        'nse_law', 'nse_social_work', 'nse_arts', 'nse_other',
+        # Geosciences sub-fields
+        'geo_atmospheric', 'geo_earth', 'geo_ocean', 'geo_other',
+    }
+    VALID_AGENCY_CODES = {'DOD', 'DOE', 'HHS', 'NASA', 'NSF', 'USDA', 'Other agencies'}
+
+    def _validate_codes(self, sql):
+        """Check LLM-generated SQL for invalid field_code or agency_code values.
+
+        Returns (is_valid, error_message). If invalid, the error message includes
+        the bad code and the list of valid alternatives so the retry prompt can
+        guide the LLM to the correct code.
+        """
+        # Extract field_code values: field_code = 'xxx' or field_code='xxx'
+        field_matches = re.findall(r"field_code\s*=\s*'([^']+)'", sql, re.IGNORECASE)
+        for code in field_matches:
+            if code not in self.VALID_FIELD_CODES:
+                # Find likely category from the bad code
+                prefix = code.split('_')[0] if '_' in code else code
+                suggestions = sorted([c for c in self.VALID_FIELD_CODES if c.startswith(prefix + '_') or c == prefix])
+                if not suggestions:
+                    suggestions = sorted(self.VALID_FIELD_CODES)
+                return False, (
+                    f"Invalid field_code '{code}'. "
+                    f"Did you mean one of: {', '.join(suggestions)}? "
+                    f"All valid codes: {', '.join(sorted(self.VALID_FIELD_CODES))}"
+                )
+
+        # Extract agency_code values
+        agency_matches = re.findall(r"agency_code\s*=\s*'([^']+)'", sql, re.IGNORECASE)
+        for code in agency_matches:
+            if code not in self.VALID_AGENCY_CODES:
+                return False, (
+                    f"Invalid agency_code '{code}'. "
+                    f"Valid codes: {', '.join(sorted(self.VALID_AGENCY_CODES))}. "
+                    "Note: NIH is part of HHS — use agency_code = 'HHS'."
+                )
+
+        return True, ""
 
     def generate_sql(self, question, context=None):
         """Generate SQL from a natural language question.
@@ -646,9 +818,38 @@ Write the corrected SQL query only:"""
             (sql, results_df, summary_text)
         """
         sql = self.generate_sql(question, context=context)
+
+        # Validate field/agency codes before executing
+        is_valid, code_error = self._validate_codes(sql)
+        if not is_valid:
+            # Retry with the specific error so the LLM can fix the code
+            retry_prompt = f"""The following SQL has an invalid code. Fix it.
+
+Original question: "{question}"
+
+Failed SQL:
+{sql}
+
+Error: {code_error}
+
+{self._build_context_block(context)}
+
+Write the corrected SQL query only:"""
+            try:
+                response = self.client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=retry_prompt
+                )
+                retry_sql = self._clean_sql(response.text)
+                is_valid_retry, _ = self._validate_codes(retry_sql)
+                if is_valid_retry:
+                    sql = retry_sql
+            except Exception:
+                pass  # proceed with original SQL — execute_sql may still work
+
         results = self.execute_sql(sql)
 
-        # Auto-retry if empty
+        # Auto-retry if empty results
         sql, results = self._validate_and_retry(question, sql, results, context=context)
 
         summary = self.summarize_results(question, results)
@@ -674,7 +875,13 @@ Guidelines:
 - Include specific numbers and dollar amounts
 - Add context (rankings, comparisons) where the data supports it
 - Keep it direct, no filler words
-- If showing growth rates, mention the baseline for context
+- If showing growth rates, mention the baseline dollar amounts for context
+- If the data contains a field_code or agency_code, name it explicitly in the summary
+  (e.g. "Engineering: Biomedical (eng_biomedical)" or "HHS (includes NIH)")
+  so the user can confirm the right discipline/agency was queried
+- If there is an is_selected column, identify which row is the user's institution
+  and frame the insight from their perspective (e.g. "You rank #119...")
+- Use positioning language, not judgments. Say "ranked #119 of 487" not "low ranking."
 
 Summary:"""
 
