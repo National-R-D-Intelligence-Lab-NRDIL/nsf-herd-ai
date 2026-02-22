@@ -438,8 +438,8 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
         )
 
     # ------------------------------------------------------------------
-    # Top 10 state leaders (the existing table, now in an expander so it
-    # doesn't dominate the page when the user's institution isn't in it).
+    # Top 10 state leaders in an expander so it doesn't dominate the page
+    # when the user's institution isn't in the top 10.
     # ------------------------------------------------------------------
     with st.expander(f"Top 10 in {state_name}"):
         display_df = state_df.head(10).copy()
@@ -459,6 +459,9 @@ def render_snapshot_tab(
 ):
     """Snapshot tab — now receives selection from top-level picker."""
     max_year = end_year
+
+    if custom_peer_mode:
+        st.info(f"📌 Custom peer mode — {len(custom_peer_inst_ids or [])} institutions selected.")
 
     rank_df = engine.get_rank_trend(selected_institution, start_year, end_year)
     if rank_df.empty:
@@ -940,8 +943,7 @@ def render_snapshot_tab(
     # --- State Competitive Position ---
     state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
     if not state_df.empty:
-        with st.expander("State Competitive Position", expanded=False):
-            render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution, end_year)
+        render_state_ranking(state_df, state_rank, market_share, state_name, selected_institution, end_year)
 
     # --- State Peers (KNN-matched within state) ---
     # Rendered here alongside State Competitive Position for a complete state picture.
@@ -1084,8 +1086,11 @@ def create_visualization(df, question):
     # Filter out reference/baseline columns (constant value across all rows —
     # e.g. unt_cagr=9.6% on every row). These are useful in the table but
     # produce misleading flat charts.
+    # Also exclude is_selected (row highlight marker, not data).
     reference_cols = {c for c in numeric_cols if df[c].nunique() <= 1}
-    primary_cols = [c for c in numeric_cols if c not in reference_cols]
+    marker_cols = {'is_selected'}
+    excluded = reference_cols | marker_cols
+    primary_cols = [c for c in numeric_cols if c not in excluded]
     if not primary_cols:
         primary_cols = numeric_cols  # fallback if all columns happen to be constant
 
@@ -1150,7 +1155,7 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
     """Field-level analysis: portfolio composition, momentum, and peer comparison."""
 
     if custom_peer_mode:
-        st.warning(f"🔧 Custom peer mode — {len(peer_inst_ids)} institutions selected.")
+        st.info(f"📌 Custom peer mode — {len(peer_inst_ids)} institutions selected.")
 
     portfolio = engine.get_field_portfolio(selected_institution, end_year)
     if portfolio.empty:
@@ -1382,7 +1387,7 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
     """Agency-level federal funding analysis: breakdown, trends, positioning."""
 
     if custom_peer_mode:
-        st.warning(f"🔧 Custom peer mode — {len(peer_inst_ids)} institutions selected.")
+        st.info(f"📌 Custom peer mode — {len(peer_inst_ids)} institutions selected.")
 
     agencies = engine.get_agency_breakdown(selected_institution, end_year)
     if agencies.empty:
@@ -1587,7 +1592,7 @@ def render_qa_tab(selected_institution=None, state_code=None, start_year=2019, e
 
         q_groups = {
             "How do we compare?": [
-                "Who beats us in engineering?",
+                "Where do we rank in engineering among similar institutions?",
                 f"How does our life sciences R&D compare to other {state_label} schools?",
                 f"Which {state_label} schools grew faster than us?",
             ],
@@ -1633,7 +1638,23 @@ def render_qa_tab(selected_institution=None, state_code=None, start_year=2019, e
                 st.code(item['sql'], language="sql")
 
             if item.get('results') is not None and len(item['results']) > 0:
-                st.dataframe(item['results'], use_container_width=True)
+                hist_df = item['results'].copy()
+                if 'is_selected' in hist_df.columns:
+                    hist_mask = hist_df['is_selected'] == 1
+                    hist_df = hist_df.drop(columns=['is_selected'])
+
+                    def _highlight_hist(row):
+                        if hist_mask.iloc[row.name]:
+                            return ['background-color: #EFF6FF; font-weight: bold'] * len(row)
+                        return [''] * len(row)
+
+                    st.dataframe(
+                        hist_df.style.apply(_highlight_hist, axis=1),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.dataframe(hist_df, use_container_width=True)
 
             if item.get('summary'):
                 st.info(f"📊 {item['summary']}")
@@ -1700,7 +1721,24 @@ def process_question(question, enable_viz=True):
                     st.code(sql, language="sql")
 
                 if results is not None and len(results) > 0:
-                    st.dataframe(results, use_container_width=True)
+                    # Highlight the selected institution if is_selected column exists
+                    display_df = results.copy()
+                    if 'is_selected' in display_df.columns:
+                        selected_mask = display_df['is_selected'] == 1
+                        display_df = display_df.drop(columns=['is_selected'])
+
+                        def _highlight_selected(row):
+                            if selected_mask.iloc[row.name]:
+                                return ['background-color: #EFF6FF; font-weight: bold'] * len(row)
+                            return [''] * len(row)
+
+                        st.dataframe(
+                            display_df.style.apply(_highlight_selected, axis=1),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.dataframe(display_df, use_container_width=True)
                     st.success("Query executed successfully")
                 else:
                     st.warning("Query returned no results. Try rephrasing.")
@@ -1805,7 +1843,7 @@ user_institution = st.session_state.get('user_institution')
 if user_institution and user_institution in institution_list:
     default_idx = institution_list.index(user_institution)
 
-col_pick, col_window, col_peers = st.columns([2, 1, 1])
+col_pick, col_window = st.columns([2, 1])
 with col_pick:
     selected_institution = st.selectbox(
         "Pick an institution",
@@ -1823,26 +1861,8 @@ with col_window:
         ],
         index=0
     )
-with col_peers:
-    _peer_choice = st.selectbox(
-        "Peer group size",
-        options=["10 peers (default)", "Custom…"],
-        index=0,
-    )
 
-if _peer_choice == "Custom…":
-    with st.expander("Select peer group size", expanded=True):
-        n_peers_selected = st.number_input(
-            "Number of peers",
-            min_value=1,
-            max_value=10,
-            value=10,
-            step=1,
-            key="custom_n_peers",
-        )
-    n_peers_selected = int(n_peers_selected)
-else:
-    n_peers_selected = 10
+n_peers_selected = 10
 
 # Custom range expander (shown only when "Custom Range…" is selected)
 if time_window == "Custom Range…":
