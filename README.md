@@ -19,8 +19,9 @@ Create a `.env` file:
 ```
 GEMINI_API_KEY=your_key_here
 DATABASE_PATH=data/herd.db
-PASSWORD=your_password_here
-ALLOWED_INSTITUTIONS=  # optional: comma-separated inst_ids, empty = all allowed
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your_anon_key_here
+PASSWORD=your_fallback_password   # only used if Supabase is not configured
 ```
 
 Run it:
@@ -29,7 +30,7 @@ Run it:
 streamlit run app.py
 ```
 
-Open `http://localhost:8501`, select your institution from the dropdown, and enter the password.
+Open `http://localhost:8501`. If Supabase is configured, click **Create Account** and register with your email. If Supabase is not configured, select your institution and enter the shared password.
 
 You need a Gemini API key from https://ai.google.dev/ and the HERD database file at `data/herd.db`. See the ETL section below if you need to build the database from scratch.
 
@@ -243,10 +244,12 @@ Four parents (CS, Math, Psychology, Other Sciences) are standalone – the HERD 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GEMINI_API_KEY` | Yes | – | Google Gemini API key |
-| `PASSWORD` | Yes | – | Login password. App refuses to start without it. |
+| `SUPABASE_URL` | Yes (recommended) | – | Supabase project URL. Enables per-user email+password auth and usage logging. |
+| `SUPABASE_ANON_KEY` | Yes (recommended) | – | Supabase anon/public key. |
+| `PASSWORD` | Fallback | – | Shared password used only when Supabase is not configured. App refuses to start without it. |
 | `DATABASE_PATH` | No | `data/herd.db` | Path to SQLite database |
-| `ALLOWED_INSTITUTIONS` | No | `` (empty) | Comma-separated inst_ids for access control. Empty = all allowed. |
-| `GOOGLE_SHEET_ID` | No | – | Google Sheet ID for usage logging |
+| `ALLOWED_INSTITUTIONS` | No | `` (empty) | Comma-separated inst_ids for access control (legacy mode only). Empty = all allowed. |
+| `GOOGLE_SHEET_ID` | No | – | Google Sheet ID for Q&A usage logging |
 | `GOOGLE_SHEETS_CREDS` | No | – | Service account credentials JSON string |
 
 ---
@@ -255,7 +258,15 @@ Four parents (CS, Math, Psychology, Other Sciences) are standalone – the HERD 
 
 ### Railway
 
-The repo includes a `Procfile`. Set your environment variables in the Railway dashboard and deploy.
+The repo includes a `Procfile`. Set the following environment variables in the Railway dashboard and deploy:
+
+```
+GEMINI_API_KEY
+DATABASE_PATH
+PASSWORD
+SUPABASE_URL
+SUPABASE_ANON_KEY
+```
 
 ### Streamlit Cloud
 
@@ -358,7 +369,28 @@ The Q&A tab sends user questions to Gemini, which generates SQL. Four safeguards
 3. The SQLite connection opens in read-only mode (`file:{path}?mode=ro`).
 4. Rate limiter: 50 queries per hour per session.
 
-**Authentication**: Institution-based login. Users select their institution from a dropdown and enter a shared password. The institution name is logged for usage tracking. Access control is enforced via `ALLOWED_INSTITUTIONS` environment variable when configured.
+**Authentication**: Per-user email + password via Supabase when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set. Users register once with their name, institution, and email — institution is stored in Supabase user metadata and pre-selects the dashboard on every login. Falls back to a shared institution-dropdown + password login when Supabase is not configured.
+
+**Usage logging**: All login, signup, institution view, and Q&A question events are logged to a `usage_log` table in Supabase. This provides named-user adoption tracking and question-level feedback for product decisions. See Supabase setup below.
+
+**Supabase setup**:
+1. Create a project at supabase.com
+2. Disable email confirmation: Auth → Settings → "Enable email confirmations" → OFF
+3. Create the usage log table in the SQL editor:
+```sql
+CREATE TABLE usage_log (
+    id          uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id     uuid,
+    email       text,
+    full_name   text,
+    event_type  text,
+    institution text,
+    question    text,
+    created_at  timestamptz DEFAULT now()
+);
+ALTER TABLE usage_log DISABLE ROW LEVEL SECURITY;
+```
+4. Add `SUPABASE_URL` and `SUPABASE_ANON_KEY` to your environment
 
 The `PASSWORD` environment variable has no default fallback. The app will not start without it.
 
@@ -388,7 +420,8 @@ The `PASSWORD` environment variable has no default fallback. The app will not st
 - **Plotly** – interactive charts
 - **pandas** – data manipulation
 - **NumPy** – array operations
-- **gspread** – optional Google Sheets logging
+- **Supabase** – user auth (email + password) and usage logging
+- **gspread** – optional Google Sheets logging (legacy)
 
 ---
 
