@@ -29,6 +29,8 @@ PASSWORD       = get_env('PASSWORD')
 GOOGLE_SHEET_ID    = get_env('GOOGLE_SHEET_ID')
 GOOGLE_SHEETS_CREDS = get_env('GOOGLE_SHEETS_CREDS')
 ALLOWED_INSTITUTIONS = get_env('ALLOWED_INSTITUTIONS', '')  # comma-separated inst_ids, empty = all allowed
+SUPABASE_URL      = get_env('SUPABASE_URL')
+SUPABASE_ANON_KEY = get_env('SUPABASE_ANON_KEY')
 
 if not GEMINI_API_KEY:
     st.error("GEMINI_API_KEY is not set. Add it to your environment variables.")
@@ -66,45 +68,163 @@ def load_login_institution_list():
         conn.close()
     return df
 
+# ============================================================
+# Supabase client + usage logging
+# ============================================================
+def get_supabase():
+    """Supabase client. Returns (client, error_reason) tuple."""
+    if not SUPABASE_URL:
+        return None, "SUPABASE_URL not set"
+    if not SUPABASE_ANON_KEY:
+        return None, "SUPABASE_ANON_KEY not set"
+    try:
+        from supabase import create_client
+        return create_client(SUPABASE_URL, SUPABASE_ANON_KEY), None
+    except Exception as e:
+        return None, str(e)
+
+def log_usage(event_type, **kwargs):
+    """Fire-and-forget usage logging to Supabase. Never crashes the app."""
+    try:
+        sb, _ = get_supabase()
+        if not sb:
+            return
+        sb.table("usage_log").insert({
+            "user_id":    st.session_state.get("supabase_user_id"),
+            "email":      st.session_state.get("user_email"),
+            "full_name":  st.session_state.get("user_full_name"),
+            "event_type": event_type,
+            **kwargs,
+        }).execute()
+    except Exception:
+        pass  # logging must never crash the app
+
+def _supabase_login(email, password):
+    """Attempt Supabase sign-in. Returns (user, error_str)."""
+    try:
+        sb, _ = get_supabase()
+        resp = sb.auth.sign_in_with_password({"email": email, "password": password})
+        return resp.user, None
+    except Exception as e:
+        return None, str(e)
+
+def _supabase_signup(email, password, full_name, institution):
+    """Attempt Supabase sign-up. Returns (user, error_str)."""
+    try:
+        sb, _ = get_supabase()
+        resp = sb.auth.sign_up({
+            "email": email,
+            "password": password,
+            "options": {"data": {"full_name": full_name, "institution": institution}},
+        })
+        return resp.user, None
+    except Exception as e:
+        return None, str(e)
+
+def _apply_session(user, full_name=None, institution=None):
+    """Populate session state from a Supabase user object."""
+    meta = user.user_metadata or {}
+    st.session_state.logged_in          = True
+    st.session_state.supabase_user_id   = str(user.id)
+    st.session_state.user_email         = user.email
+    st.session_state.user_full_name     = full_name or meta.get("full_name", user.email.split("@")[0])
+    st.session_state.user_institution   = institution or meta.get("institution", "")
+    st.session_state.username           = user.email
+    st.session_state.query_count        = 0
+    st.session_state.query_window_start = datetime.now()
+
 def check_login():
     if st.session_state.get('logged_in'):
         return
 
     st.title("NSF HERD Research Intelligence")
-    st.markdown("Select your institution to get started.")
+    st.caption("R&D funding intelligence for university research leaders.")
+    st.markdown("---")
 
-    login_df = load_login_institution_list()
+    # ── Supabase path ────────────────────────────────────────────
+    sb, sb_error = get_supabase()
+    if sb:
+        st.info(
+            "**We've upgraded our login system.**  \n"
+            "If you previously used a shared password, please create a personal account below — it takes 30 seconds.  \n"
+            "Already have an account? Switch to **Sign In**."
+        )
 
-    # If ALLOWED_INSTITUTIONS is set, filter the dropdown
-    allowed_ids = [x.strip() for x in ALLOWED_INSTITUTIONS.split(',') if x.strip()]
-    if allowed_ids:
-        login_df = login_df[login_df['inst_id'].isin(allowed_ids)]
-        if login_df.empty:
-            st.error("No institutions are currently enrolled. Contact the administrator.")
-            st.stop()
+        mode = st.radio("", ["Create Account", "Sign In"], horizontal=True,
+                        label_visibility="collapsed")
+        st.markdown("---")
 
-    institution = st.selectbox(
-        "Your Institution",
-        options=login_df['name'].tolist(),
-        index=None,
-        placeholder="Search for your university..."
-    )
-    password = st.text_input("Password", type="password")
+        if mode == "Create Account":
+            full_name   = st.text_input("Full Name",   placeholder="Jane Smith")
+            institution = st.text_input("Institution", placeholder="University of North Texas")
+            email       = st.text_input("Email",       placeholder="you@university.edu")
+            password    = st.text_input("Password", type="password", help="At least 6 characters")
+            if st.button("Create Account", type="primary", use_container_width=True):
+                if not all([full_name, institution, email, password]):
+                    st.error("Please fill in all fields.")
+                elif len(password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    user, err = _supabase_signup(email, password, full_name, institution)
+                    if user:
+                        _apply_session(user, full_name=full_name, institution=institution)
+                        log_usage("signup", institution=institution)
+                        st.rerun()
+                    else:
+                        if "already registered" in (err or "").lower():
+                            st.error("This email is already registered. Please switch to Sign In.")
+                        else:
+                            st.error(f"Could not create account: {err}")
 
-    if st.button("Login", type="primary"):
-        if institution and password == PASSWORD:
-            inst_row = login_df[login_df['name'] == institution]
-            st.session_state.logged_in = True
-            st.session_state.username = institution
-            st.session_state.user_inst_id = inst_row['inst_id'].values[0]
-            st.session_state.user_institution = institution
-            st.session_state.query_count = 0
-            st.session_state.query_window_start = datetime.now()
-            st.rerun()
-        elif not institution:
-            st.error("Please select your institution.")
         else:
-            st.error("Invalid password.")
+            email    = st.text_input("Email", placeholder="you@university.edu")
+            password = st.text_input("Password", type="password")
+            if st.button("Sign In", type="primary", use_container_width=True):
+                if not email or not password:
+                    st.error("Please enter your email and password.")
+                else:
+                    user, err = _supabase_login(email, password)
+                    if user:
+                        _apply_session(user)
+                        log_usage("login")
+                        st.rerun()
+                    else:
+                        st.error("Invalid email or password.")
+
+        st.markdown("---")
+        st.caption("Need help? Email [kalyansai.gudikadi@unt.edu](mailto:kalyansai.gudikadi@unt.edu)")
+
+    # ── Legacy PASSWORD fallback (used until Supabase is configured) ──
+    else:
+        st.warning(f"⚠️ Supabase not available: `{sb_error}` — using legacy login.")
+        login_df = load_login_institution_list()
+        allowed_ids = [x.strip() for x in ALLOWED_INSTITUTIONS.split(',') if x.strip()]
+        if allowed_ids:
+            login_df = login_df[login_df['inst_id'].isin(allowed_ids)]
+            if login_df.empty:
+                st.error("No institutions are currently enrolled. Contact the administrator.")
+                st.stop()
+
+        institution = st.selectbox(
+            "Your Institution", options=login_df['name'].tolist(),
+            index=None, placeholder="Search for your university..."
+        )
+        password = st.text_input("Password", type="password")
+        if st.button("Login", type="primary"):
+            if institution and password == PASSWORD:
+                inst_row = login_df[login_df['name'] == institution]
+                st.session_state.logged_in          = True
+                st.session_state.username           = institution
+                st.session_state.user_inst_id       = inst_row['inst_id'].values[0]
+                st.session_state.user_institution   = institution
+                st.session_state.query_count        = 0
+                st.session_state.query_window_start = datetime.now()
+                st.rerun()
+            elif not institution:
+                st.error("Please select your institution.")
+            else:
+                st.error("Invalid password.")
+
     st.stop()
 
 check_login()
@@ -143,6 +263,7 @@ def log_to_sheets(username, question, sql, viewing=None):
         sheet.append_row([timestamp, username, viewing or '', question, sql])
     except Exception:
         pass
+
 
 # ============================================================
 # Query engine setup
@@ -1915,6 +2036,7 @@ def process_question(question, enable_viz=True):
                 sql, results, summary = engine.ask(question, context=qa_context)
                 viewing = st.session_state.get('current_viewing', '')
                 log_to_sheets(st.session_state.username, question, sql, viewing)
+                log_usage("qa_question", institution=viewing, question=question)
 
                 with st.expander("Generated SQL"):
                     st.code(sql, language="sql")
@@ -2102,6 +2224,11 @@ else:
 
 # Track what institution is currently being viewed (for logging)
 st.session_state['current_viewing'] = selected_institution or ''
+
+# Log institution view when it changes (deduplicated per session)
+if selected_institution and selected_institution != st.session_state.get('_last_logged_inst'):
+    st.session_state['_last_logged_inst'] = selected_institution
+    log_usage("institution_view", institution=selected_institution)
 
 # -----------------------------------------------------------------------
 # Custom peer selection (optional, session-scoped override of KNN peers)
