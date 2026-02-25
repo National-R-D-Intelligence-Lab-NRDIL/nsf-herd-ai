@@ -214,6 +214,40 @@ METRIC_LABELS = {
 }
 
 # ============================================================
+# Chart export helpers
+# ============================================================
+
+def _inst_slug(name: str) -> str:
+    """Short filename-safe slug from an institution name.
+    'University of North Texas, Denton' → 'University_of_North_Texas'
+    """
+    return name.split(",")[0].strip().replace(" ", "_")
+
+
+def plotly_export(fig, filename: str):
+    """Render a Plotly chart with a named, 2x-resolution PNG download button.
+
+    Uses Plotly's built-in client-side export — zero server processing,
+    no kaleido dependency. The camera icon in the chart toolbar triggers
+    a browser-side render and drops a PNG into the user's downloads folder.
+    scale=2 produces crisp images that look sharp in PowerPoint slides.
+    displayModeBar=True keeps the toolbar always visible so VPRs can find it.
+    """
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": filename,
+                "scale": 2,
+            },
+            "displayModeBar": True,
+            "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+        },
+    )
+
+# ============================================================
 # Snapshot tab: the full institution snapshot experience.
 # User picks a school and a time window, we show:
 #   - 3 stat cards (current rank, R&D, movement)
@@ -229,15 +263,14 @@ def render_executive_summary(
     n_peers=None,
     custom_peer_mode=False,
 ):
-    st.subheader("Strategic Summary")
-    
+    st.subheader("Strategic Insight")
+
     if not metrics:
         st.warning("Unable to generate summary")
         return
 
-    # Decide which growth numbers to use for the KPI card and Peer Position banner.
-    # Priority: KNN/custom bench_trend_stats > legacy resource-parity metrics.
-    # This keeps the banner consistent with the Peer Analysis section below.
+    # Peer Position banner needs growth figures — derive from KNN stats when
+    # available so the label matches what the landing briefing showed.
     if bench_trend_stats:
         target_growth = bench_trend_stats['target_cagr']
         peer_avg      = bench_trend_stats['peer_avg_cagr']
@@ -248,35 +281,11 @@ def render_executive_summary(
         else:
             peer_label = "KNN peers"
     else:
-        # Fallback: resource-parity peer set from get_peer_comparison
         target_growth = metrics['target_growth']
         peer_avg      = metrics['peer_avg']
         peer_label    = "resource-parity peers"
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric(
-            "Current Rank",
-            f"#{metrics['current_rank']}",
-            delta=metrics['rank_change'] if metrics['rank_change'] != 0 else None,
-            delta_color="normal"
-        )
-    with c2:
-        st.metric(
-            "Total R&D ({})".format(end_year),
-            fmt_dollars(metrics['current_rd']),
-            delta=fmt_dollars(metrics['rd_change'])
-        )
-    with c3:
-        growth_delta = round(target_growth - peer_avg, 1)
-        growth_years = end_year - start_year
-        st.metric(
-            f"{growth_years}-Year Growth ({start_year}–{end_year})",
-            f"{target_growth}%",
-            delta=f"{growth_delta}% vs {peer_label}"
-        )
-    
-    # Second row: field and agency callouts from the new tables
+    # Field and agency callouts — not shown in the landing briefing so kept here
     if callouts:
         c4, c5 = st.columns(2)
         with c4:
@@ -322,7 +331,7 @@ def render_executive_summary(
 #    st.markdown("---")
 
 
-def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year):
+def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year, institution_name=""):
     if breakdown_df.empty:
         st.warning("No funding data available")
         return
@@ -347,8 +356,25 @@ def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year):
             names=list(sources.keys()),
             title=f'{end_year} Funding Sources'
         )
-        fig_pie.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig_pie, use_container_width=True)
+        fig_pie.update_traces(
+            textinfo='percent',
+            textposition='inside',
+            insidetextorientation='horizontal',
+            hovertemplate='%{label}<br>$%{value:,.0f}<br>%{percent}<extra></extra>',
+        )
+        fig_pie.update_layout(
+            height=340,
+            legend=dict(
+                orientation='h',
+                yanchor='top',
+                y=-0.05,
+                xanchor='center',
+                x=0.5,
+                font=dict(size=11),
+            ),
+            margin=dict(l=20, r=20, t=40, b=90),
+        )
+        plotly_export(fig_pie, f"{_inst_slug(institution_name)}_funding_sources_{end_year}")
     
     with col2:
         fig_line = px.line(
@@ -369,8 +395,8 @@ def render_funding_breakdown(breakdown_df, trend_df, national_median, end_year):
             yaxis_title='Federal %',
             yaxis_range=[0, 100]
         )
-        st.plotly_chart(fig_line, use_container_width=True)
-    
+        plotly_export(fig_line, f"{_inst_slug(institution_name)}_federal_share")
+
     latest_federal = trend_df.iloc[-1]['federal_pct']
     st.markdown(
         f"**Federal Share:** {latest_federal:.1f}% — "
@@ -451,6 +477,163 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
         display_df.columns = ['Rank', 'Institution', f'{end_year} R&D', '5-Yr CAGR']
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+# ============================================================
+# Landing Intelligence Briefing
+# Shown above all tabs — 3 KPIs + 1 actionable callout.
+# Rule-based only (no LLM) so it renders instantly.
+# ============================================================
+
+def _generate_landing_callout(metrics, bench_stats, callouts, start_year, end_year, n_peers):
+    """Return the single most actionable insight as a markdown string.
+
+    Priority:
+      1. Growth rank among KNN peers   — most specific and actionable
+      2. National rank movement        — most visible to a provost
+      3. Portfolio signal              — always available as fallback
+    Returns None if no meaningful signal exists.
+    """
+    if not metrics:
+        return None
+
+    n_years = end_year - start_year
+    signals = []
+
+    # --- Signal 1: peer growth rank ---
+    if bench_stats and bench_stats.get('growth_rank') and bench_stats.get('total_in_group'):
+        rank  = bench_stats['growth_rank']
+        total = bench_stats['total_in_group']
+        cagr  = bench_stats['target_cagr']
+        pavg  = bench_stats['peer_avg_cagr']
+        diff  = round(cagr - pavg, 1)
+
+        if rank <= 3:
+            signals.append((3,
+                f"You rank **#{rank} of {total}** among your {n_peers} KNN peers in "
+                f"{n_years}-year R&D growth ({cagr}% CAGR). "
+                f"See who you're outpacing in the Snapshot tab → Peer Analysis."
+            ))
+        elif rank > total - 3:
+            signals.append((3,
+                f"Your {n_years}-year growth ({cagr}% CAGR) ranks **#{rank} of {total}** "
+                f"KNN peers — peer average is {pavg}%. "
+                f"Snapshot tab → Peer Analysis shows which funding sources peers are scaling faster."
+            ))
+        elif diff >= 2:
+            signals.append((2,
+                f"Growing **{diff:+.1f}pp faster** than your {n_peers} KNN peers "
+                f"({cagr}% vs {pavg}% CAGR over {n_years} years). "
+                f"You rank #{rank} of {total} in your peer group."
+            ))
+        elif diff <= -2:
+            signals.append((2,
+                f"Growing **{abs(diff):.1f}pp slower** than your {n_peers} KNN peers "
+                f"({cagr}% vs {pavg}% CAGR over {n_years} years). "
+                f"You rank #{rank} of {total} in your peer group."
+            ))
+
+    # --- Signal 2: national rank movement ---
+    rank_change = metrics.get('rank_change', 0)
+    if abs(rank_change) >= 10:
+        current = metrics['current_rank']
+        if rank_change > 0:
+            signals.append((2,
+                f"Rose **{rank_change} positions** nationally over {n_years} years "
+                f"(#{current} today). See the full ranking trend in the Snapshot tab."
+            ))
+        else:
+            signals.append((2,
+                f"National rank moved **{abs(rank_change)} positions** over {n_years} years "
+                f"(#{current} today). Snapshot tab → Peer Analysis shows where peers gained ground."
+            ))
+
+    # --- Signal 3: portfolio signal (lowest priority, reliable fallback) ---
+    if callouts and callouts.get('top_field') and callouts.get('top_field_pct'):
+        signals.append((1,
+            f"**{callouts['top_field']}** is your largest research field at "
+            f"{callouts['top_field_pct']}% of portfolio. "
+            f"See sub-field momentum in the Research Portfolio tab."
+        ))
+
+    if not signals:
+        return None
+
+    signals.sort(key=lambda x: -x[0])
+    return signals[0][1]
+
+
+def render_landing_briefing(selected_institution, inst_id, start_year, end_year, n_peers=10):
+    """3 KPI cards + 1 actionable callout displayed before the tabs.
+
+    Gives VPRs immediate intelligence without requiring a single click.
+    Fails silently if data is unavailable — the tabs still work normally.
+    Note: bench_stats computation is also performed inside render_snapshot_tab.
+    This duplication is intentional until the pre-computed metrics table
+    (Phase 2 roadmap) is added, at which point both calls become instant.
+    """
+    try:
+        metrics = engine.get_executive_metrics(selected_institution, start_year, end_year)
+        if not metrics:
+            return
+    except Exception:
+        return
+
+    bench_stats = None
+    try:
+        _, bench_stats = benchmarker.get_peer_trend(
+            inst_id, DATABASE_PATH, start_year, end_year, n=n_peers
+        )
+    except Exception:
+        pass
+
+    callouts = None
+    try:
+        callouts = engine.get_snapshot_callouts(selected_institution, end_year)
+    except Exception:
+        pass
+
+    n_years = end_year - start_year
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        rank_change = metrics['rank_change']
+        st.metric(
+            f"National Rank — FY{end_year}",
+            f"#{metrics['current_rank']}",
+            delta=f"{rank_change:+d} positions since {start_year}" if rank_change != 0 else None,
+            delta_color="normal",   # positive = rank number improved = green
+        )
+
+    with c2:
+        st.metric(
+            f"Total R&D — FY{end_year}",
+            fmt_dollars(metrics['current_rd']),
+            delta=fmt_dollars(metrics['rd_change']),
+        )
+
+    with c3:
+        if bench_stats:
+            diff = round(bench_stats['target_cagr'] - bench_stats['peer_avg_cagr'], 1)
+            st.metric(
+                f"{n_years}-Year CAGR",
+                f"{bench_stats['target_cagr']}%",
+                delta=f"{diff:+.1f}pp vs {n_peers} KNN peers",
+            )
+        else:
+            st.metric(
+                f"{n_years}-Year CAGR",
+                f"{metrics['target_growth']}%",
+            )
+
+    callout = _generate_landing_callout(
+        metrics, bench_stats, callouts, start_year, end_year, n_peers
+    )
+    if callout:
+        st.info(callout)
+
+    st.markdown("---")
+
+
 def render_snapshot_tab(
     selected_institution, start_year, end_year, inst_id,
     n_peers: int = 10,
@@ -492,14 +675,15 @@ def render_snapshot_tab(
         text=[f"#{r}" for r in ranks],
         textposition='outside',
         textfont=dict(size=14, color='#374151'),
-        hovertemplate='Year: %{y}<br>Rank: #%{x}<extra></extra>'
+        hovertemplate='Year: %{y}<br>Rank: #%{x}<extra></extra>',
+        cliponaxis=False,
     ))
     max_rank_show = max(ranks) + 15
     fig_rank.update_layout(
         xaxis=dict(range=[max_rank_show, 0], title='National Rank', showgrid=True, gridcolor='#F3F4F6'),
         yaxis=dict(title=None, categoryorder='array', categoryarray=[str(y) for y in years]),
         height=220,
-        margin=dict(l=50, r=60, t=10, b=30),
+        margin=dict(l=50, r=80, t=10, b=30),
         plot_bgcolor='white',
         paper_bgcolor='white',
     )
@@ -528,7 +712,8 @@ def render_snapshot_tab(
         text=labels,
         textposition='outside',
         textfont=dict(size=11, color='#374151'),
-        hovertemplate='%{y}<br>R&D: %{text}<extra></extra>'
+        hovertemplate='%{y}<br>R&D: %{text}<extra></extra>',
+        cliponaxis=False,
     ))
     fig_anchor.update_layout(
         xaxis=dict(title='Total R&D', showgrid=True, gridcolor='#F3F4F6', tickformat='$,.0f'),
@@ -556,7 +741,11 @@ def render_snapshot_tab(
             names=list(sources.keys()),
             title=f'{end_year} Funding Sources'
         )
-        fig_pie.update_traces(textinfo='percent+label')
+        fig_pie.update_traces(
+            textinfo='percent',
+            textposition='inside',
+            insidetextorientation='horizontal',
+        )
         all_charts['funding_pie'] = fig_pie
         
         fig_fed = px.line(
@@ -672,12 +861,12 @@ def render_snapshot_tab(
 
     # --- Ranking Over Time ---
     st.subheader("Ranking Over Time")
-    st.plotly_chart(fig_rank, use_container_width=True)
+    plotly_export(fig_rank, f"{_inst_slug(selected_institution)}_national_rank_{start_year}_{end_year}")
     st.caption(f"Ranked out of {total_inst:,} institutions nationally")
 
     # --- Where You Sit Nationally ---
     st.subheader("Where You Sit Nationally")
-    st.plotly_chart(fig_anchor, use_container_width=True)
+    plotly_export(fig_anchor, f"{_inst_slug(selected_institution)}_national_position_{end_year}")
 
     # --- Unified Peer Analysis ---
     if bench_gap and bench_peers:
@@ -750,6 +939,7 @@ def render_snapshot_tab(
                 text=[fmt_dollars(v) for v in my_vals],
                 textposition="outside",
                 textfont=dict(size=12),
+                cliponaxis=False,
             ))
             fig_gap.add_trace(go.Bar(
                 y=gap_labels, x=avg_vals, orientation="h",
@@ -758,18 +948,19 @@ def render_snapshot_tab(
                 text=[fmt_dollars(v) for v in avg_vals],
                 textposition="outside",
                 textfont=dict(size=12),
+                cliponaxis=False,
             ))
             fig_gap.update_layout(
                 barmode="group",
                 height=380,
-                margin=dict(l=10, r=100, t=10, b=30),
+                margin=dict(l=10, r=120, t=10, b=30),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 xaxis=dict(title=None, showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
                 yaxis=dict(title=None, autorange="reversed"),
                 plot_bgcolor="white",
                 paper_bgcolor="white",
             )
-            st.plotly_chart(fig_gap, use_container_width=True)
+            plotly_export(fig_gap, f"{_inst_slug(selected_institution)}_peer_funding_gap_{end_year}")
 
             with st.expander("Detailed gap numbers"):
                 gap_table = []
@@ -897,7 +1088,7 @@ def render_snapshot_tab(
                     yaxis=dict(tickformat="$,.0s"),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 )
-                st.plotly_chart(fig_trend, use_container_width=True)
+                plotly_export(fig_trend, f"{_inst_slug(selected_institution)}_peer_growth_{start_year}_{end_year}")
             else:
                 st.info("Historical trend data is not available.")
 
@@ -938,7 +1129,7 @@ def render_snapshot_tab(
 
     # --- Funding Source Analysis ---
     if not breakdown_df.empty:
-        render_funding_breakdown(breakdown_df, trend_df, national_median, end_year)
+        render_funding_breakdown(breakdown_df, trend_df, national_median, end_year, selected_institution)
 
     # --- State Competitive Position ---
     state_df, state_rank, market_share, state_name = engine.get_state_ranking(selected_institution, end_year, start_year)
@@ -990,6 +1181,7 @@ def render_snapshot_tab(
             text=[fmt_dollars(v) for v in s_my_vals],
             textposition="outside",
             textfont=dict(size=12),
+            cliponaxis=False,
         ))
         fig_state_gap.add_trace(go.Bar(
             y=s_labels, x=s_avg_vals, orientation="h",
@@ -998,18 +1190,19 @@ def render_snapshot_tab(
             text=[fmt_dollars(v) for v in s_avg_vals],
             textposition="outside",
             textfont=dict(size=12),
+            cliponaxis=False,
         ))
         fig_state_gap.update_layout(
             barmode="group",
             height=380,
-            margin=dict(l=10, r=100, t=10, b=30),
+            margin=dict(l=10, r=120, t=10, b=30),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             xaxis=dict(title=None, showgrid=True, gridcolor="#F3F4F6", tickformat="$,.0f"),
             yaxis=dict(title=None, autorange="reversed"),
             plot_bgcolor="white",
             paper_bgcolor="white",
         )
-        st.plotly_chart(fig_state_gap, use_container_width=True)
+        plotly_export(fig_state_gap, f"{_inst_slug(selected_institution)}_state_peer_gap_{end_year}")
 
         # --- Growth trend vs top state institutions ---
         if state_trend_df is not None and not state_trend_df.empty:
@@ -1042,7 +1235,7 @@ def render_snapshot_tab(
                 yaxis=dict(tickformat="$,.0s"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             )
-            st.plotly_chart(fig_state_trend, use_container_width=True)
+            plotly_export(fig_state_trend, f"{_inst_slug(selected_institution)}_state_growth_{start_year}_{end_year}")
 
         # --- KNN state peers list ---
         with st.expander(
@@ -1188,7 +1381,7 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
     fig_port.update_layout(
         barmode='stack',
         height=max(280, len(display) * 40),
-        margin=dict(l=10, r=120, t=10, b=30),
+        margin=dict(l=10, r=180, t=10, b=30),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         xaxis=dict(title='R&D Expenditure', tickformat='$,.0s', showgrid=True, gridcolor='#F3F4F6'),
         yaxis=dict(title=None, autorange='reversed'),
@@ -1203,7 +1396,7 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
             showarrow=False, xanchor='left',
             font=dict(size=11, color='#374151'),
         )
-    st.plotly_chart(fig_port, use_container_width=True)
+    plotly_export(fig_port, f"{_inst_slug(selected_institution)}_portfolio_{end_year}")
 
     # --- Section 2: Field Momentum (BCG scatter) ---
     momentum = engine.get_field_momentum(selected_institution, start_year, end_year)
@@ -1230,6 +1423,7 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
             marker=dict(color='#2563EB', opacity=0.7, line=dict(width=1, color='white')),
             textposition='top center',
             textfont=dict(size=10),
+            cliponaxis=False,
         )
         # Add quadrant reference lines at medians
         med_x = mom_plot['portfolio_share'].median()
@@ -1250,17 +1444,18 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
                                text="Established Base", showarrow=False,
                                font=dict(size=10, color='#9CA3AF'), opacity=0.7)
         fig_mom.add_annotation(x=med_x - x_range * 0.25, y=med_y - y_range * 0.35,
-                               text="Low Activity", showarrow=False,
+                               text="Smaller Base", showarrow=False,
                                font=dict(size=10, color='#9CA3AF'), opacity=0.7)
         fig_mom.update_layout(
             xaxis_title='Portfolio Share (%)',
             yaxis_title=f'{end_year - start_year}-Year CAGR (%)',
             height=420,
+            margin=dict(l=50, r=50, t=60, b=50),
             plot_bgcolor='white',
             paper_bgcolor='white',
             showlegend=False,
         )
-        st.plotly_chart(fig_mom, use_container_width=True)
+        plotly_export(fig_mom, f"{_inst_slug(selected_institution)}_field_momentum_{start_year}_{end_year}")
 
         # Growth signal callouts
         fastest = mom_plot.loc[mom_plot['cagr'].idxmax()]
@@ -1365,17 +1560,18 @@ def render_research_portfolio_tab(selected_institution, start_year, end_year, in
                 textfont=dict(size=11),
                 hovertemplate='%{y}<br>You: %{customdata[0]:.1f}%<br>Peers: %{customdata[1]:.1f}%<extra></extra>',
                 customdata=fc[['your_pct', 'peer_avg_pct']].values,
+                cliponaxis=False,
             ))
             fig_div.add_vline(x=0, line_color='#374151', line_width=1)
             fig_div.update_layout(
                 height=max(280, len(fc) * 36),
-                margin=dict(l=10, r=80, t=10, b=30),
+                margin=dict(l=10, r=100, t=10, b=30),
                 xaxis=dict(title='Difference (percentage points)', showgrid=True, gridcolor='#F3F4F6'),
                 yaxis=dict(title=None),
                 plot_bgcolor='white',
                 paper_bgcolor='white',
             )
-            st.plotly_chart(fig_div, use_container_width=True)
+            plotly_export(fig_div, f"{_inst_slug(selected_institution)}_portfolio_distinctiveness_{end_year}")
 
     st.markdown("---")
 
@@ -1411,16 +1607,18 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
                 '#2563EB', '#3B82F6', '#60A5FA', '#93C5FD',
                 '#BFDBFE', '#DBEAFE', '#EFF6FF'
             ]),
-            textinfo='percent+label',
+            textinfo='percent',
+            textposition='inside',
+            insidetextorientation='horizontal',
             textfont=dict(size=11),
             hovertemplate='%{label}<br>$%{value:,.0f}<br>%{percent}<extra></extra>',
         )])
         fig_donut.update_layout(
             height=350,
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=dict(l=20, r=20, t=20, b=20),
             showlegend=False,
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        plotly_export(fig_donut, f"{_inst_slug(selected_institution)}_federal_agencies_{end_year}")
 
     with col_table:
         table_data = agencies.copy()
@@ -1493,7 +1691,7 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
             paper_bgcolor='white',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         )
-        st.plotly_chart(fig_trend, use_container_width=True)
+        plotly_export(fig_trend, f"{_inst_slug(selected_institution)}_agency_trends_{start_year}_{end_year}")
 
         # Show growth rates per agency
         with st.expander("Agency Growth Summary"):
@@ -1549,17 +1747,18 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
                 textfont=dict(size=11),
                 hovertemplate='%{y}<br>You: %{customdata[0]:.1f}%<br>Peers: %{customdata[1]:.1f}%<extra></extra>',
                 customdata=ac[['your_pct', 'peer_avg_pct']].values,
+                cliponaxis=False,
             ))
             fig_adiv.add_vline(x=0, line_color='#374151', line_width=1)
             fig_adiv.update_layout(
                 height=max(240, len(ac) * 40),
-                margin=dict(l=10, r=80, t=10, b=30),
+                margin=dict(l=10, r=100, t=10, b=30),
                 xaxis=dict(title='Difference (percentage points)', showgrid=True, gridcolor='#F3F4F6'),
                 yaxis=dict(title=None),
                 plot_bgcolor='white',
                 paper_bgcolor='white',
             )
-            st.plotly_chart(fig_adiv, use_container_width=True)
+            plotly_export(fig_adiv, f"{_inst_slug(selected_institution)}_agency_distinctiveness_{end_year}")
 
     st.markdown("---")
 
@@ -1662,7 +1861,7 @@ def render_qa_tab(selected_institution=None, state_code=None, start_year=2019, e
             if enable_viz and item.get('results') is not None and len(item['results']) > 0:
                 chart = create_visualization(item['results'], item['question'])
                 if chart:
-                    st.plotly_chart(chart, use_container_width=True)
+                    plotly_export(chart, f"herd_qa_{item['question'][:30].replace(' ', '_')}")
 
             if item.get('results') is not None and len(item['results']) > 0:
                 csv_data = item['results'].to_csv(index=False)
@@ -1749,7 +1948,7 @@ def process_question(question, enable_viz=True):
                 if enable_viz and results is not None and len(results) > 0:
                     chart = create_visualization(results, question)
                     if chart:
-                        st.plotly_chart(chart, use_container_width=True)
+                        plotly_export(chart, f"herd_qa_{question[:30].replace(' ', '_')}")
 
                 # Keep last 20 exchanges in memory
                 st.session_state.history.append({
@@ -1783,6 +1982,7 @@ def process_question(question, enable_viz=True):
 # ============================================================
 with st.sidebar:
     st.markdown(f"**Logged in as:** {st.session_state.get('user_institution', 'Unknown')}")
+    st.caption(f"📊 NSF HERD data current through **FY{engine.get_max_year()}**")
     st.markdown("---")
 
     with st.expander("How to Read This Dashboard"):
@@ -1974,6 +2174,13 @@ st.session_state['_qa_state_code']    = state_code
 st.session_state['_qa_start_year']    = start_year
 st.session_state['_qa_end_year']      = end_year
 st.session_state['_qa_peer_inst_ids'] = peer_inst_ids
+
+# --- Landing intelligence briefing (above tabs, no click required) ---
+if selected_institution and inst_id:
+    render_landing_briefing(
+        selected_institution, inst_id, start_year, end_year,
+        n_peers=n_peers_selected,
+    )
 
 # --- Four tabs ---
 tab_snapshot, tab_portfolio, tab_federal, tab_qa = st.tabs([

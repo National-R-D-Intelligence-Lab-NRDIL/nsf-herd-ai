@@ -450,7 +450,7 @@ class HERDQueryEngine:
     # Direct DB access
     # ----------------------------------------------------------
     def _query(self, sql, params=None):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
         df = pd.read_sql(sql, conn, params=params)
         conn.close()
         return df
