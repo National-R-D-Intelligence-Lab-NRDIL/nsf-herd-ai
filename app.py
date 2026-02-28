@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 from zoneinfo import ZoneInfo
+import urllib.parse
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -25,52 +26,22 @@ def get_env(key, default=None):
 
 GEMINI_API_KEY = get_env('GEMINI_API_KEY')
 DATABASE_PATH  = get_env('DATABASE_PATH', 'data/herd.db')
-PASSWORD       = get_env('PASSWORD')
 GOOGLE_SHEET_ID    = get_env('GOOGLE_SHEET_ID')
 GOOGLE_SHEETS_CREDS = get_env('GOOGLE_SHEETS_CREDS')
-ALLOWED_INSTITUTIONS = get_env('ALLOWED_INSTITUTIONS', '')  # comma-separated inst_ids, empty = all allowed
 SUPABASE_URL      = get_env('SUPABASE_URL')
 SUPABASE_ANON_KEY = get_env('SUPABASE_ANON_KEY')
+BASE_URL          = get_env('BASE_URL', 'http://localhost:8501').rstrip('/')
 
 if not GEMINI_API_KEY:
     st.error("GEMINI_API_KEY is not set. Add it to your environment variables.")
     st.stop()
 
-if not PASSWORD:
-    st.error("PASSWORD is not set. Add it to your environment variables.")
-    st.stop()
-
-# ============================================================
-# Authentication
-# Institution-based login: VPR selects their university, enters
-# shared password. Tracks who is using the tool and restricts
-# access when ALLOWED_INSTITUTIONS is set.
-# ============================================================
-MAX_QUERIES_PER_HOUR = 50
-
-@st.cache_data(ttl=3600)
-def load_login_institution_list():
-    """Load institution list for login screen.
-
-    Uses a lightweight direct query so we don't depend on
-    the full engine being initialized yet.
-    """
-    import sqlite3
-    conn = sqlite3.connect(f"file:{DATABASE_PATH}?mode=ro", uri=True)
-    try:
-        df = pd.read_sql("""
-            SELECT DISTINCT inst_id, name
-            FROM institutions
-            WHERE year = (SELECT MAX(year) FROM institutions)
-            ORDER BY name
-        """, conn)
-    finally:
-        conn.close()
-    return df
 
 # ============================================================
 # Supabase client + usage logging
 # ============================================================
+MAX_QUERIES_PER_HOUR = 50
+
 def get_supabase():
     """Supabase client. Returns (client, error_reason) tuple."""
     if not SUPABASE_URL:
@@ -98,6 +69,41 @@ def log_usage(event_type, **kwargs):
         }).execute()
     except Exception:
         pass  # logging must never crash the app
+
+def load_saved_peers(user_id: str, institution: str) -> list:
+    """Load saved custom peers for this user+institution. Returns [] on any error."""
+    try:
+        sb, _ = get_supabase()
+        if not sb:
+            return []
+        result = (sb.table("user_preferences")
+                    .select("custom_peers")
+                    .eq("user_id", user_id)
+                    .eq("institution", institution)
+                    .execute())
+        if result.data:
+            return result.data[0].get("custom_peers", []) or []
+    except Exception:
+        pass
+    return []
+
+def save_custom_peers(user_id: str, institution: str, peers: list) -> None:
+    """Upsert custom peers for this user+institution. Fire-and-forget."""
+    try:
+        sb, _ = get_supabase()
+        if not sb:
+            return
+        sb.table("user_preferences").upsert(
+            {
+                "user_id":      user_id,
+                "institution":  institution,
+                "custom_peers": peers,
+                "updated_at":   datetime.utcnow().isoformat(),
+            },
+            on_conflict="user_id,institution",
+        ).execute()
+    except Exception:
+        pass
 
 def _supabase_login(email, password):
     """Attempt Supabase sign-in. Returns (user, error_str)."""
@@ -194,40 +200,44 @@ def check_login():
         st.markdown("---")
         st.caption("Need help? Email [kalyansai.gudikadi@unt.edu](mailto:kalyansai.gudikadi@unt.edu)")
 
-    # ── Legacy PASSWORD fallback (used until Supabase is configured) ──
     else:
-        st.warning(f"⚠️ Supabase not available: `{sb_error}` — using legacy login.")
-        login_df = load_login_institution_list()
-        allowed_ids = [x.strip() for x in ALLOWED_INSTITUTIONS.split(',') if x.strip()]
-        if allowed_ids:
-            login_df = login_df[login_df['inst_id'].isin(allowed_ids)]
-            if login_df.empty:
-                st.error("No institutions are currently enrolled. Contact the administrator.")
-                st.stop()
-
-        institution = st.selectbox(
-            "Your Institution", options=login_df['name'].tolist(),
-            index=None, placeholder="Search for your university..."
-        )
-        password = st.text_input("Password", type="password")
-        if st.button("Login", type="primary"):
-            if institution and password == PASSWORD:
-                inst_row = login_df[login_df['name'] == institution]
-                st.session_state.logged_in          = True
-                st.session_state.username           = institution
-                st.session_state.user_inst_id       = inst_row['inst_id'].values[0]
-                st.session_state.user_institution   = institution
-                st.session_state.query_count        = 0
-                st.session_state.query_window_start = datetime.now()
-                st.rerun()
-            elif not institution:
-                st.error("Please select your institution.")
-            else:
-                st.error("Invalid password.")
+        st.error(f"Login system unavailable: {sb_error}. Please contact the administrator.")
 
     st.stop()
 
+# ============================================================
+# URL param seeding — read ?inst=...&years=5 once per session
+# so bookmarked / shared links pre-select the right institution.
+# MUST run before check_login() so pref_inst survives st.stop()
+# and persists in session_state through the login flow.
+# Compatible with Streamlit >=1.29 (experimental) and >=1.30 (stable).
+# ============================================================
+try:
+    _qp = st.query_params          # Streamlit >=1.30
+    _qp_get = lambda k: _qp.get(k)
+except AttributeError:
+    _raw_qp = st.experimental_get_query_params()  # Streamlit 1.29
+    _qp_get = lambda k: (_raw_qp[k][0] if k in _raw_qp else None)
+
+_qp_inst  = _qp_get("inst")
+_qp_years = _qp_get("years")
+if _qp_inst and "pref_inst" not in st.session_state:
+    st.session_state["pref_inst"] = _qp_inst
+if _qp_years and "pref_years" not in st.session_state:
+    try:
+        st.session_state["pref_years"] = int(_qp_years)
+    except (ValueError, TypeError):
+        pass
+
 check_login()
+
+# Scroll to top on every rerun so Q&A chat history doesn't auto-scroll the page.
+# Streamlit runs inside an iframe — target the parent document's .main element.
+st.components.v1.html("""
+<script>
+    window.parent.document.querySelector('section.main').scrollTo(0, 0);
+</script>
+""", height=0)
 
 # ============================================================
 # Google Sheets logging — fires and forgets.
@@ -304,6 +314,8 @@ if 'pending_question' not in st.session_state:
     st.session_state.pending_question = None
 if 'custom_peers_multiselect' not in st.session_state:
     st.session_state['custom_peers_multiselect'] = []  # drives the multiselect widget
+if '_pending_custom_peers' not in st.session_state:
+    st.session_state['_pending_custom_peers'] = []
 
 # Cache the institution list — it's a full table scan, no point
 # running it on every rerender.
@@ -320,6 +332,12 @@ def fmt_dollars(n):
     if n >= 1e6:
         return f"${n / 1e6:.1f}M"
     return f"${n:,.0f}"
+
+def fmt_dollars_full(n):
+    """Full comma-separated format for data tables: $1,234,567"""
+    if n is None or (isinstance(n, float) and n != n):
+        return "—"
+    return f"${int(n):,}"
 
 # ============================================================
 # Labels for funding metric display names
@@ -398,9 +416,9 @@ def render_executive_summary(
         if custom_peer_mode:
             peer_label = "custom peers"
         elif n_peers:
-            peer_label = f"{n_peers} KNN peers"
+            peer_label = f"{n_peers} Benchmark Peers"
         else:
-            peer_label = "KNN peers"
+            peer_label = "Benchmark Peers"
     else:
         target_growth = metrics['target_growth']
         peer_avg      = metrics['peer_avg']
@@ -559,7 +577,7 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
     if not band_df.empty and len(band_df) > 1:
         st.markdown("**Your Competitive Band**")
         band_display = band_df.copy()
-        band_display['total_rd'] = band_display['total_rd'].apply(fmt_dollars)
+        band_display['total_rd'] = band_display['total_rd'].apply(fmt_dollars_full)
         band_display['cagr'] = band_display['cagr'].apply(
             lambda x: f"{x}%" if x == x else "N/A"
         )
@@ -590,7 +608,7 @@ def render_state_ranking(state_df, rank, market_share, state_name, selected_inst
     # ------------------------------------------------------------------
     with st.expander(f"Top 10 in {state_name}"):
         display_df = state_df.head(10).copy()
-        display_df['total_rd'] = display_df['total_rd'].apply(fmt_dollars)
+        display_df['total_rd'] = display_df['total_rd'].apply(fmt_dollars_full)
         display_df['cagr'] = display_df['cagr'].apply(
             lambda x: f"{x}%" if x == x else "N/A"
         )
@@ -608,7 +626,7 @@ def _generate_landing_callout(metrics, bench_stats, callouts, start_year, end_ye
     """Return the single most actionable insight as a markdown string.
 
     Priority:
-      1. Growth rank among KNN peers   — most specific and actionable
+      1. Growth rank among Benchmark Peers — most specific and actionable
       2. National rank movement        — most visible to a provost
       3. Portfolio signal              — always available as fallback
     Returns None if no meaningful signal exists.
@@ -629,25 +647,25 @@ def _generate_landing_callout(metrics, bench_stats, callouts, start_year, end_ye
 
         if rank <= 3:
             signals.append((3,
-                f"You rank **#{rank} of {total}** among your {n_peers} KNN peers in "
+                f"You rank **#{rank} of {total}** among your {n_peers} Benchmark Peers in "
                 f"{n_years}-year R&D growth ({cagr}% CAGR). "
                 f"See who you're outpacing in the Snapshot tab → Peer Analysis."
             ))
         elif rank > total - 3:
             signals.append((3,
                 f"Your {n_years}-year growth ({cagr}% CAGR) ranks **#{rank} of {total}** "
-                f"KNN peers — peer average is {pavg}%. "
+                f"Benchmark Peers — peer average is {pavg}%. "
                 f"Snapshot tab → Peer Analysis shows which funding sources peers are scaling faster."
             ))
         elif diff >= 2:
             signals.append((2,
-                f"Growing **{diff:+.1f}pp faster** than your {n_peers} KNN peers "
+                f"Growing **{diff:+.1f}pp faster** than your {n_peers} Benchmark Peers "
                 f"({cagr}% vs {pavg}% CAGR over {n_years} years). "
                 f"You rank #{rank} of {total} in your peer group."
             ))
         elif diff <= -2:
             signals.append((2,
-                f"Growing **{abs(diff):.1f}pp slower** than your {n_peers} KNN peers "
+                f"Growing **{abs(diff):.1f}pp slower** than your {n_peers} Benchmark Peers "
                 f"({cagr}% vs {pavg}% CAGR over {n_years} years). "
                 f"You rank #{rank} of {total} in your peer group."
             ))
@@ -738,7 +756,7 @@ def render_landing_briefing(selected_institution, inst_id, start_year, end_year,
             st.metric(
                 f"{n_years}-Year CAGR",
                 f"{bench_stats['target_cagr']}%",
-                delta=f"{diff:+.1f}pp vs {n_peers} KNN peers",
+                delta=f"{diff:+.1f}pp vs {n_peers} Benchmark Peers",
             )
         else:
             st.metric(
@@ -996,7 +1014,7 @@ def render_snapshot_tab(
         if custom_peer_mode:
             st.warning(
                 "**Custom peer set active** — these results reflect your manually selected "
-                "institutions, not the algorithmically matched KNN peers. "
+                "institutions, not the AI-recommended Benchmark Peers. "
                 "Comparisons may not reflect structural funding similarity. "
                 "Growth rank is disabled for custom peer sets."
             )
@@ -1090,13 +1108,13 @@ def render_snapshot_tab(
                     gap_val = g["gap"]
                     gap_table.append({
                         "Metric": label,
-                        "You": fmt_dollars(g["my_val"]),
-                        "Peer Avg": fmt_dollars(g["peer_avg"]),
-                        "Gap": f"{'+'if gap_val>=0 else ''}{fmt_dollars(abs(gap_val))}",
+                        "You": fmt_dollars_full(g["my_val"]),
+                        "Peer Avg": fmt_dollars_full(g["peer_avg"]),
+                        "Gap": f"{'+'if gap_val>=0 else ''}{fmt_dollars_full(abs(gap_val))}",
                     })
                 st.dataframe(gap_table, use_container_width=True, hide_index=True)
 
-            _peer_label = "custom" if custom_peer_mode else "KNN"
+            _peer_label = "custom" if custom_peer_mode else "Benchmark"
             with st.expander(f"Who are my {len(bench_peers)} peers? ({_peer_label})"):
                 peer_rows = []
                 for pname in bench_peers:
@@ -1105,7 +1123,7 @@ def render_snapshot_tab(
                         peer_rows.append({
                             "Institution": pname,
                             "State": row["state"].values[0],
-                            "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                            "Total R&D": fmt_dollars_full(float(row["total_rd"].values[0])),
                         })
                 st.dataframe(peer_rows, use_container_width=True, hide_index=True)
                 if custom_peer_mode:
@@ -1213,7 +1231,7 @@ def render_snapshot_tab(
             else:
                 st.info("Historical trend data is not available.")
 
-            _peer_label = "custom" if custom_peer_mode else "KNN"
+            _peer_label = "custom" if custom_peer_mode else "Benchmark"
             with st.expander(f"Who are my {len(bench_peers)} peers? ({_peer_label})"):
                 peer_rows = []
                 for pname in bench_peers:
@@ -1222,7 +1240,7 @@ def render_snapshot_tab(
                         peer_rows.append({
                             "Institution": pname,
                             "State": row["state"].values[0],
-                            "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
+                            "Total R&D": fmt_dollars_full(float(row["total_rd"].values[0])),
                         })
                 st.dataframe(peer_rows, use_container_width=True, hide_index=True)
                 if custom_peer_mode:
@@ -1282,11 +1300,11 @@ def render_snapshot_tab(
                     f"{state_trend_stats['peer_avg_cagr']}%",
                 )
 
-        # --- Funding profile vs state KNN peer avg ---
-        st.markdown(f"**Funding Profile vs {state_code_bench} KNN Peers**")
+        # --- Funding profile vs state Benchmark Peer avg ---
+        st.markdown(f"**Funding Profile vs {state_code_bench} Benchmark Peers**")
         st.caption(
             f"Compared against {len(state_peer_names)} portfolio-similar institutions "
-            f"in {state_code_bench} (KNN-matched from top-100 national neighbors). "
+            f"in {state_code_bench} (AI-matched from top-100 national neighbors). "
             "Positive = you spend more in this category."
         )
 
@@ -1358,9 +1376,9 @@ def render_snapshot_tab(
             )
             plotly_export(fig_state_trend, f"{_inst_slug(selected_institution)}_state_growth_{start_year}_{end_year}")
 
-        # --- KNN state peers list ---
+        # --- Benchmark state peers list ---
         with st.expander(
-            f"Who are my {len(state_peer_names)} {state_code_bench} KNN peers?"
+            f"Who are my {len(state_peer_names)} {state_code_bench} Benchmark Peers?"
         ):
             state_table_rows = []
             for pname in state_peer_names:
@@ -1368,14 +1386,14 @@ def render_snapshot_tab(
                 if not row.empty:
                     state_table_rows.append({
                         "Institution": pname,
-                        "Total R&D": fmt_dollars(float(row["total_rd"].values[0])),
-                        "Federal":    fmt_dollars(float(row["federal"].values[0])),
+                        "Total R&D": fmt_dollars_full(float(row["total_rd"].values[0])),
+                        "Federal":    fmt_dollars_full(float(row["federal"].values[0])),
                     })
             st.dataframe(state_table_rows, use_container_width=True, hide_index=True)
             st.caption(
                 f"These are the most portfolio-similar institutions to you "
                 f"that are also located in {state_code_bench}, "
-                "identified by searching the top-100 national KNN neighbors."
+                "identified by searching the top-100 national Benchmark neighbors."
             )
         st.markdown("---")
     elif state_error:
@@ -1743,7 +1761,7 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
 
     with col_table:
         table_data = agencies.copy()
-        table_data['Amount'] = table_data['amount'].apply(fmt_dollars)
+        table_data['Amount'] = table_data['amount'].apply(fmt_dollars_full)
         table_data['Share'] = table_data['pct_of_federal'].apply(lambda x: f"{x}%")
         table_data = table_data.rename(columns={'agency_name': 'Agency'})
         st.dataframe(
@@ -1827,8 +1845,8 @@ def render_federal_landscape_tab(selected_institution, start_year, end_year, ins
                         change_pct = round((last_val / first_val - 1) * 100, 0)
                         growth_rows.append({
                             'Agency': adf.iloc[0]['agency_name'],
-                            f'{int(adf.iloc[0]["year"])}': fmt_dollars(first_val),
-                            f'{int(adf.iloc[-1]["year"])}': fmt_dollars(last_val),
+                            f'{int(adf.iloc[0]["year"])}': fmt_dollars_full(first_val),
+                            f'{int(adf.iloc[-1]["year"])}': fmt_dollars_full(last_val),
                             'Change': f"{'+' if change_pct >= 0 else ''}{change_pct:.0f}%"
                         })
             if growth_rows:
@@ -1902,6 +1920,17 @@ def render_qa_tab(selected_institution=None, state_code=None, start_year=2019, e
 
     st.info("Ask questions about R&D funding across 1,004 universities. "
             "I'll query the database and show you the results.")
+
+    if st.session_state.get('_qa_peer_mode_type') == 'custom':
+        _qa_peer_names = st.session_state.get('_qa_peer_names', [])
+        _names_str = ", ".join(_qa_peer_names[:3])
+        if len(_qa_peer_names) > 3:
+            _names_str += f" + {len(_qa_peer_names) - 3} more"
+        st.warning(
+            f"**Custom peer mode active** — questions about 'my peers' compare against your "
+            f"{len(_qa_peer_names)} selected institutions: _{_names_str}_. "
+            "Clear your custom selection above to switch back to AI-recommended Benchmark Peers."
+        )
 
     # --- Suggested Questions ---
     if selected_institution:
@@ -2031,7 +2060,9 @@ def process_question(question, enable_viz=True):
                         'state': st.session_state.get('_qa_state_code'),
                         'start_year': st.session_state.get('_qa_start_year'),
                         'end_year': st.session_state.get('_qa_end_year'),
-                        'peer_inst_ids': st.session_state.get('_qa_peer_inst_ids', []),
+                        'peer_inst_ids':  st.session_state.get('_qa_peer_inst_ids', []),
+                        'peer_mode_type': st.session_state.get('_qa_peer_mode_type', 'benchmark'),
+                        'peer_names':     st.session_state.get('_qa_peer_names', []),
                     }
                 sql, results, summary = engine.ask(question, context=qa_context)
                 viewing = st.session_state.get('current_viewing', '')
@@ -2128,8 +2159,8 @@ scaled to 0–100.
 concentration ranks among all federally-funded institutions.
 Higher = more concentrated.
 
-**KNN Peers** — The 10 most similar institutions, identified
-using K-Nearest Neighbors on log-transformed funding data
+**Benchmark Peers** — The 10 most similar institutions, identified
+using AI matching on log-transformed funding data
 (total R&D + 6 funding sources). Size is intentionally
 double-weighted so a \\$300M school is never compared to a \\$3B school.
 
@@ -2159,11 +2190,20 @@ st.markdown("Explore university R&D funding across 1,004 institutions (2010–20
 institution_list = load_institution_list()
 max_year = engine.get_max_year()
 
-# Default to the institution the user logged in as
+# Default priority: URL param > logged-in institution > None
 default_idx = None
 user_institution = st.session_state.get('user_institution')
 if user_institution and user_institution in institution_list:
     default_idx = institution_list.index(user_institution)
+pref_inst = st.session_state.pop("pref_inst", None)
+if pref_inst and pref_inst in institution_list:
+    default_idx = institution_list.index(pref_inst)
+
+# Time window index: URL ?years=10 → index 1, else default 0
+_pref_years = st.session_state.pop("pref_years", None)
+_time_window_idx = 0
+if _pref_years == 10:
+    _time_window_idx = 1
 
 col_pick, col_window = st.columns([2, 1])
 with col_pick:
@@ -2181,7 +2221,7 @@ with col_window:
             f"10-Year ({max_year - 10}–{max_year})",
             "Custom Range…",
         ],
-        index=0
+        index=_time_window_idx,
     )
 
 n_peers_selected = 10
@@ -2222,6 +2262,40 @@ else:
     start_year = max_year - 10
     end_year = max_year
 
+# Write current selection back to URL so the address bar is always shareable.
+# Custom ranges are not persisted via URL (too complex; users can bookmark 5/10-year views).
+if selected_institution:
+    try:
+        _years_val = "5" if "5-Year" in time_window else ("10" if "10-Year" in time_window else None)
+        _new_params = {"inst": selected_institution}
+        if _years_val:
+            _new_params["years"] = _years_val
+        try:
+            # Streamlit >=1.30 stable API
+            for k, v in _new_params.items():
+                st.query_params[k] = v
+            if not _years_val:
+                st.query_params.pop("years", None)
+        except AttributeError:
+            # Streamlit 1.29 experimental API
+            st.experimental_set_query_params(**_new_params)
+    except Exception:
+        pass  # URL updates must never crash the app
+
+# Show share link in sidebar (uses sidebar API so it renders after selectboxes resolve)
+if selected_institution:
+    try:
+        _years_param = "5" if "5-Year" in time_window else ("10" if "10-Year" in time_window else None)
+        _enc_inst = urllib.parse.quote(selected_institution)
+        _share_url = BASE_URL + f"/?inst={_enc_inst}" + (f"&years={_years_param}" if _years_param else "")
+        with st.sidebar:
+            st.caption("**Share this view**")
+            st.code(_share_url, language=None)
+            st.caption("Copy the link above to share or bookmark this institution view.")
+            st.markdown("---")
+    except Exception:
+        pass
+
 # Track what institution is currently being viewed (for logging)
 st.session_state['current_viewing'] = selected_institution or ''
 
@@ -2231,9 +2305,19 @@ if selected_institution and selected_institution != st.session_state.get('_last_
     log_usage("institution_view", institution=selected_institution)
 
 # -----------------------------------------------------------------------
-# Custom peer selection (optional, session-scoped override of KNN peers)
+# Custom peer selection (optional, session-scoped override of Benchmark Peers)
 # -----------------------------------------------------------------------
 custom_peer_options = [i for i in institution_list if i != selected_institution]
+
+# Load saved custom peers from Supabase when institution changes
+if selected_institution and selected_institution != st.session_state.get('_last_loaded_peers_inst'):
+    st.session_state['_last_loaded_peers_inst'] = selected_institution
+    _uid = st.session_state.get('supabase_user_id')
+    if _uid:
+        _saved = load_saved_peers(_uid, selected_institution)
+        _valid = [p for p in _saved if p in custom_peer_options]
+        st.session_state['custom_peers_multiselect'] = _valid
+        st.session_state['_pending_custom_peers']    = _valid
 
 # Two-run clear pattern:
 # The "Clear" button cannot modify the multiselect widget key in the same
@@ -2242,6 +2326,7 @@ custom_peer_options = [i for i in institution_list if i != selected_institution]
 # widget is instantiated, which is the only moment the key can be set.
 if st.session_state.get('_clear_peers_pending'):
     st.session_state['custom_peers_multiselect'] = []
+    st.session_state['_pending_custom_peers'] = []
     del st.session_state['_clear_peers_pending']
 
 # Remove stale selections when the selected institution changes.
@@ -2250,23 +2335,36 @@ st.session_state['custom_peers_multiselect'] = [
     p for p in st.session_state['custom_peers_multiselect']
     if p in custom_peer_options
 ]
+st.session_state['_pending_custom_peers'] = [
+    p for p in st.session_state.get('_pending_custom_peers', [])
+    if p in custom_peer_options
+]
 
 with st.expander("Custom peer selection (optional)", expanded=False):
     st.caption(
-        "Override the algorithmic (KNN) peer group with your own selection. "
-        "Custom peers are session-only and not saved on refresh."
+        "Override the AI-recommended Benchmark Peers with your own selection. "
+        "Click **Apply** to update the dashboard. Selections are saved to your account."
     )
-    selected_custom_peers = st.multiselect(
+    st.multiselect(
         "Select comparison institutions",
         options=custom_peer_options,
-        placeholder="Leave empty to use automatic KNN peers…",
-        key="custom_peers_multiselect",
+        placeholder="Leave empty to use AI-recommended Benchmark Peers…",
+        key="_pending_custom_peers",   # staging — does NOT trigger peer computation
     )
-    if selected_custom_peers:
-        if st.button("Clear custom peers", type="secondary", key="clear_custom_peers"):
-            # Set flag, rerun — the key is cleared at the top of the next run
-            st.session_state['_clear_peers_pending'] = True
+    col_apply, col_clear = st.columns([1, 1])
+    with col_apply:
+        if st.button("Apply", type="primary", key="apply_custom_peers"):
+            new_peers = list(st.session_state['_pending_custom_peers'])
+            st.session_state['custom_peers_multiselect'] = new_peers
+            _uid = st.session_state.get('supabase_user_id')
+            if _uid and selected_institution:
+                save_custom_peers(_uid, selected_institution, new_peers)
             st.rerun()
+    with col_clear:
+        if st.session_state.get('custom_peers_multiselect'):
+            if st.button("Clear", type="secondary", key="clear_custom_peers"):
+                st.session_state['_clear_peers_pending'] = True
+                st.rerun()
 
 # Determine whether custom mode is active (driven entirely by the widget key)
 custom_peer_mode = bool(st.session_state['custom_peers_multiselect'])
@@ -2296,11 +2394,31 @@ if selected_institution:
                 peer_inst_ids = []
 
 # Store resolved context for the Q&A tab so engine.ask() gets precise identifiers.
-st.session_state['_qa_inst_id']       = inst_id
-st.session_state['_qa_state_code']    = state_code
-st.session_state['_qa_start_year']    = start_year
-st.session_state['_qa_end_year']      = end_year
-st.session_state['_qa_peer_inst_ids'] = peer_inst_ids
+st.session_state['_qa_inst_id']        = inst_id
+st.session_state['_qa_state_code']     = state_code
+st.session_state['_qa_start_year']     = start_year
+st.session_state['_qa_end_year']       = end_year
+st.session_state['_qa_peer_inst_ids']  = peer_inst_ids
+st.session_state['_qa_peer_mode_type'] = "custom" if custom_peer_mode else "benchmark"
+# Store peer names for LLM readability
+if custom_peer_mode:
+    st.session_state['_qa_peer_names'] = list(st.session_state.get('custom_peers_multiselect', []))
+elif inst_id:
+    try:
+        st.session_state['_qa_peer_names'] = benchmarker.get_peers(inst_id, n=n_peers_selected)
+    except Exception:
+        st.session_state['_qa_peer_names'] = []
+else:
+    st.session_state['_qa_peer_names'] = []
+
+# --- Persistent peer group banner in sidebar ---
+if selected_institution:
+    with st.sidebar:
+        if custom_peer_mode:
+            peer_names_sidebar = st.session_state.get('custom_peers_multiselect', [])
+            st.info(f"**Peer Group:** Custom ({len(peer_names_sidebar)} selected)")
+        else:
+            st.caption(f"**Peer Group:** {n_peers_selected} Benchmark Peers (AI-recommended)")
 
 # --- Landing intelligence briefing (above tabs, no click required) ---
 if selected_institution and inst_id:

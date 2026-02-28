@@ -556,6 +556,8 @@ class HERDQueryEngine:
           - state: two-letter state code
           - start_year / end_year: active time window
           - peer_inst_ids: list of peer institution IDs
+          - peer_mode_type: "custom" or "benchmark"
+          - peer_names: human-readable names of peer institutions
         """
         if not context:
             return ""
@@ -572,8 +574,16 @@ class HERDQueryEngine:
             lines.append(f"Time window: {context['start_year']} to {context['end_year']}")
             lines.append(f"  Years between = {context['end_year'] - context['start_year']}")
         if context.get('peer_inst_ids'):
-            ids = context['peer_inst_ids'][:5]
-            lines.append(f"Peer inst_ids (top 5 of {len(context.get('peer_inst_ids', []))}): {ids}")
+            ids = context['peer_inst_ids']
+            mode = context.get('peer_mode_type', 'benchmark')
+            if mode == 'custom':
+                lines.append(f"Peer group type: Custom (user-selected) — {len(ids)} peers")
+            else:
+                lines.append(f"Peer group type: AI-Recommended Benchmark Peers — {len(ids)} peers")
+            lines.append(f"Peer inst_ids: {ids}")
+            peer_names = context.get('peer_names', [])
+            if peer_names:
+                lines.append(f"Peer names: {peer_names}")
 
         lines.append("")
         lines.append("IMPORTANT: When the question refers to 'this institution', 'my institution',")
