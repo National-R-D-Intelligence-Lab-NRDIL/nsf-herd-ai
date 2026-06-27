@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "WebSearch",
+      "WebFetch(domain:www.nsf.gov)",
+      "WebFetch(domain:ncses.nsf.gov)",
+      "WebFetch(domain:www.ncura.edu)",
+      "WebFetch(domain:streamlyne.com)"
+    ]
+  }
+}
